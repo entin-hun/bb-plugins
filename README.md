@@ -51,6 +51,19 @@ pnpm build
 
 Each package README documents its installation and runtime requirements.
 
+This repository is also a BB plugin collection. Install one plugin from this
+checkout with:
+
+```sh
+bb plugin install path:. --plugin agent-plugins
+```
+
+From GitHub, use the same collection without cloning it first:
+
+```sh
+bb plugin install git:https://github.com/patleeman/bb-plugins.git@main --plugin agent-plugins
+```
+
 Each plugin README also includes a screenshot captured from the running BB
 application with staged plugin data. Capture all live surfaces after starting
 BB and seeding a thread with:
