@@ -1075,6 +1075,21 @@
   background: var(--border);
   flex: 1;
 }
+.channel-system-message {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 8px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+  text-align: center;
+}
+.channel-system-message svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
 .channel-empty {
   padding: 20px 12px;
 }

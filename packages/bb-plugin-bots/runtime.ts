@@ -14,7 +14,7 @@ import { Store } from "./store";
 import { chatGuidance } from "./chat-guidance";
 export const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
-const missingThread = (cause: unknown) =>
+export const missingThread = (cause: unknown) =>
   /(?:^|\b)(?:thread not found|thread does not exist|HTTP 404)(?:\b|$)/i.test(
     errorText(cause),
   );
@@ -76,6 +76,7 @@ export function sanitizeRoomTitle(value: string): string | null {
 }
 
 export function fallbackRoomTitle(message: RoomMessage): string | null {
+  if (message.system) return null;
   const source =
     message.text.trim() ||
     (message.attachments.length
@@ -235,6 +236,36 @@ export class Runtime {
     this.changed();
     return queued;
   }
+  /** Persist a channel notice without creating a bot job or triggering members. */
+  postSystemMessage(
+    room: Room,
+    text: string,
+    system: "bot_joined",
+  ): RoomMessage {
+    const now = Date.now();
+    const id = `system:${randomUUID()}`;
+    const message: RoomMessage = {
+      id,
+      roomId: room.id,
+      runId: id,
+      botId: null,
+      speaker: "BB",
+      system,
+      text,
+      createdAt: now,
+      attachments: [],
+      replyTo: null,
+    };
+    const current = this.store.room(room.id);
+    this.store.db.transaction(() => {
+      this.store.putMessage(message);
+      this.store.putRoom({
+        ...current,
+        updatedAt: Math.max(current.updatedAt + 1, now),
+      });
+    })();
+    return message;
+  }
   send(
     room: Room,
     text: string,
@@ -295,7 +326,11 @@ export class Runtime {
     const invited = this.store
       .all()
       .filter(
-        (bot) => !scheduled && !bot.retired && mentioned(text, bot.handle),
+        (bot) =>
+          !scheduled &&
+          !bot.retired &&
+          !room.memberIds.includes(bot.id) &&
+          mentioned(text, bot.handle),
       );
     room = {
       ...room,
@@ -338,7 +373,7 @@ export class Runtime {
     const shouldAutoTitle =
       !isAutomationTrigger(m) &&
       isAutoTitlePlaceholder(room.name) &&
-      this.store.visibleMessages(room.id, 1).length === 0;
+      !this.store.firstMessage(room.id);
     const members = room.memberIds
       .map((id) => this.store.get(id))
       .filter((b) => !b.retired && b.id !== author?.botId);
@@ -378,6 +413,12 @@ export class Runtime {
       if (!isAutomationTrigger(m))
         this.store.putRoom({ ...room, updatedAt: now });
     })();
+    for (const bot of invited)
+      this.postSystemMessage(
+        room,
+        `${bot.name} joined the channel.`,
+        "bot_joined",
+      );
     this.changed();
     if (shouldAutoTitle) this.startRoomTitle(this.store.room(room.id), m);
     return m;
@@ -1174,7 +1215,7 @@ export class Runtime {
           await this.bb.sdk.threads.output({ threadId: job.threadId })
         ).output;
         if (output?.trim()) this.complete(job.threadId, output);
-        else if (job.status === "dispatching")
+        else
           this.complete(
             job.threadId,
             null,
@@ -1261,7 +1302,7 @@ export class Runtime {
     if (this.busy.has(bot.id)) return;
     const recent = this.store.db
       .prepare(
-        "SELECT count(*) AS n FROM jobs WHERE bot_id=? AND json_extract(json,'$.startedAt')>?",
+        "SELECT count(*) AS n FROM jobs WHERE bot_id=? AND COALESCE(json_extract(json,'$.startedAt'), json_extract(json,'$.dispatchStartedAt'))>?",
       )
       .get(bot.id, Date.now() - 3600000) as { n: number };
     if (recent.n >= 30)

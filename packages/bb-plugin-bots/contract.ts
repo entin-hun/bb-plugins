@@ -161,6 +161,7 @@ export const messageSchema = z.object({
   runId: z.string(),
   botId: idSchema.nullable(),
   speaker: z.string(),
+  system: z.enum(["bot_joined"]).optional(),
   sourceThreadId: z.string().optional(),
   replyTo: z.string().nullable().default(null),
   attachments: z.array(attachmentSchema).default([]),

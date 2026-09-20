@@ -14,7 +14,12 @@ import {
   type Attachment,
 } from "./contract";
 import { Store, newId, document, saveDocument } from "./store";
-import { Runtime, jobPrompt, roomTitleThreadPrefix } from "./runtime";
+import {
+  Runtime,
+  jobPrompt,
+  missingThread,
+  roomTitleThreadPrefix,
+} from "./runtime";
 import { chatGuidance } from "./chat-guidance";
 import { ChannelAutomations } from "./channel-automations";
 import { imageMime } from "./image-format";
@@ -157,6 +162,12 @@ export default async function plugin(bb: BbPluginApi) {
             updatedAt: now,
           });
       })();
+      if (room)
+        runtime.postSystemMessage(
+          room,
+          `${bot.name} joined the channel.`,
+          "bot_joined",
+        );
       runtime.changed();
       return bot;
     });
@@ -276,12 +287,20 @@ export default async function plugin(bb: BbPluginApi) {
           bot.model !== previous.model ||
           bot.reasoningLevel !== previous.reasoningLevel
         ) {
-          for (const c of store.conversations(id))
-            await bb.sdk.threads.update({
-              threadId: c.threadId,
-              model: bot.model || null,
-              reasoningLevel: bot.reasoningLevel,
-            });
+          for (const c of store.conversations(id)) {
+            try {
+              await bb.sdk.threads.update({
+                threadId: c.threadId,
+                model: bot.model || null,
+                reasoningLevel: bot.reasoningLevel,
+              });
+            } catch (cause) {
+              if (!missingThread(cause)) throw cause;
+              store.db
+                .prepare("DELETE FROM conversations WHERE thread_id=?")
+                .run(c.threadId);
+            }
+          }
         }
         store.put(bot);
         runtime.changed();
@@ -368,8 +387,16 @@ export default async function plugin(bb: BbPluginApi) {
           updatedAt: Date.now(),
         };
         store.putRoom(room);
+        for (const botId of memberIds) {
+          const bot = store.get(botId);
+          runtime.postSystemMessage(
+            room,
+            `${bot.name} joined the channel.`,
+            "bot_joined",
+          );
+        }
         runtime.changed();
-        return room;
+        return store.room(room.id);
       }),
     updateRoom: ({
       id,
@@ -402,9 +429,20 @@ export default async function plugin(bb: BbPluginApi) {
             ...(behavior ? { responseBehavior: behavior } : {}),
             updatedAt: Date.now(),
           };
+          const added = memberIds.filter(
+            (member) => !room.memberIds.includes(member),
+          );
           store.putRoom(next);
+          for (const botId of added) {
+            const bot = store.get(botId);
+            runtime.postSystemMessage(
+              next,
+              `${bot.name} joined the channel.`,
+              "bot_joined",
+            );
+          }
           runtime.changed();
-          return next;
+          return store.room(id);
         }),
       ),
     deleteRoom: async ({ id }) => ({ deleted: await runtime.deleteRoom(id) }),
@@ -483,11 +521,12 @@ export default async function plugin(bb: BbPluginApi) {
     member: ({ id, botId, present }) =>
       runtime.locked(`room:${id}`, async () => {
         const room = store.room(id);
-        if (present && store.get(botId).retired)
+        const bot = store.get(botId);
+        if (present && bot.retired)
           throw new Error("Restore this bot before inviting it.");
-        store.get(botId);
         if (room.archived)
           throw new Error("Restore this channel before changing members.");
+        const added = present && !room.memberIds.includes(botId);
         const memberIds = present
           ? [...new Set([...room.memberIds, botId])]
           : room.memberIds.filter((key) => key !== botId);
@@ -500,8 +539,14 @@ export default async function plugin(bb: BbPluginApi) {
               await runtime.cancel(job, "Bot removed from the channel.", true);
           });
         store.putRoom(next);
+        if (added)
+          runtime.postSystemMessage(
+            next,
+            `${bot.name} joined the channel.`,
+            "bot_joined",
+          );
         runtime.changed();
-        return next;
+        return store.room(id);
       }),
     channelState: ({ id, rememberDefault, ...patch }) =>
       runtime.locked(`room:${id}`, async () => {
@@ -559,17 +604,19 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     cancelJob: ({ id }) =>
       runtime.locked("cancel", async () => {
-        const job = store.job(id);
-        if (!job) throw new Error("Work item not found.");
-        if (
-          ["done", "error", "cancelled"].includes(job.status) &&
-          !job.cancellationPending
-        )
-          return { cancelled: false };
-        await runtime.locked(job.botId, () =>
-          runtime.cancel(job, "Cancelled by the owner."),
-        );
-        return { cancelled: true };
+        const initial = store.job(id);
+        if (!initial) throw new Error("Work item not found.");
+        return runtime.locked(initial.botId, async () => {
+          const job = store.job(id);
+          if (!job) throw new Error("Work item not found.");
+          if (
+            ["done", "error", "cancelled"].includes(job.status) &&
+            !job.cancellationPending
+          )
+            return { cancelled: false };
+          await runtime.cancel(job, "Cancelled by the owner.");
+          return { cancelled: true };
+        });
       }),
   };
   bb.rpc.register(rpcContract, handlers);

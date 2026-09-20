@@ -211,6 +211,7 @@ export class Store {
          WHERE room_id=?
            AND NOT (json_extract(json,'$.automationId') IS NOT NULL
                     AND json_extract(json,'$.botId') IS NULL)
+           AND json_extract(json,'$.system') IS NULL
          ORDER BY rowid ASC LIMIT 1`,
       )
       .get(roomId) as { json: string } | undefined;

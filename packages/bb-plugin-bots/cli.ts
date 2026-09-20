@@ -493,6 +493,12 @@ export function registerCli(
             throw new UsageError("Work item is not available to this caller.");
           return job;
         }
+        function requireChannelOwner() {
+          if (caller?.botId)
+            throw new UsageError(
+              "Only the channel owner can rename, change membership, archive, restore, or delete a channel.",
+            );
+        }
         if (
           [
             "channel automations",
@@ -830,6 +836,7 @@ export function registerCli(
           const a = argumentsFor(rest),
             [selector, value] = a.positional(2),
             room = channel(selector!, ctx.threadId);
+          requireChannelOwner();
           return emit(
             command === "channel rename"
               ? await call("updateRoom", { id: room.id, name: value })
@@ -857,6 +864,8 @@ export function registerCli(
           if (command === "channel show") return emit(room);
           if (command === "channel members")
             return emit(room.memberIds.map((id) => store.get(id)));
+          if (command === "channel archive" || command === "channel restore")
+            requireChannelOwner();
           return emit(
             await call("channelState", {
               id: room.id,
@@ -872,6 +881,7 @@ export function registerCli(
           const a = argumentsFor(rest, [], ["yes"]),
             [selector] = a.positional(1),
             room = channel(selector!, ctx.threadId);
+          requireChannelOwner();
           if (!a.flag("yes"))
             throw new UsageError(
               "Deleting a channel permanently removes its history. Pass --yes to confirm, or use channel archive to preserve it.",

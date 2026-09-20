@@ -1337,6 +1337,29 @@ function ChannelChat({ id }: { id: string }) {
               reactions.filter((r) => r.messageId === m.id).map((r) => r.emoji),
             ),
           ];
+          if (m.system === "bot_joined") {
+            return (
+              <div key={m.id}>
+                {newDay && (
+                  <div className="channel-date">
+                    <span>
+                      {new Intl.DateTimeFormat(undefined, {
+                        dateStyle: "medium",
+                      }).format(m.createdAt)}
+                    </span>
+                  </div>
+                )}
+                <div
+                  id={`channel-message-${m.id}`}
+                  className="channel-system-message"
+                  role="status"
+                >
+                  <Icon name="UserRoundPlus" />
+                  <span>{m.text}</span>
+                </div>
+              </div>
+            );
+          }
           return (
             <div key={m.id}>
               {newDay && (

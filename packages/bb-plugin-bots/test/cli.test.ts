@@ -196,6 +196,33 @@ test("CLI propagates default-model reasoning and clearing a model to existing wo
   }
 });
 
+test("CLI profile updates prune conversations whose threads were deleted", async () => {
+  const x = await setup();
+  try {
+    const bot = await x.create("Prune");
+    x.store.putConversation({
+      id: "deleted-conversation",
+      botId: bot.id,
+      key: "admin",
+      threadId: "thr_deleted",
+      title: "Deleted",
+      kind: "admin",
+      createdAt: 1,
+    });
+    x.harness.inspection.sdk.stub("threads.update", async ({ threadId }) => {
+      if (threadId === "thr_deleted") throw new Error("Thread not found");
+      return makeThreadResponse();
+    });
+    const updated = botSchema.parse(
+      await x.ok(["update", bot.id, "--reasoning", "high"]),
+    );
+    assert.equal(updated.reasoningLevel, "high");
+    assert.equal(x.store.byThread("thr_deleted"), null);
+  } finally {
+    await x.close();
+  }
+});
+
 test("CLI mission and memory writes preserve version conflicts and remote file identity", async () => {
   const x = await setup();
   try {
@@ -300,6 +327,16 @@ test("CLI manages channel membership and lifecycle without overwriting unrelated
       ]),
     );
     assert.ok(x.store.room(room.id).memberIds.includes(newBot.id));
+    assert.ok(
+      x
+        .store
+        .messages(room.id)
+        .some(
+          (message) =>
+            message.system === "bot_joined" &&
+            message.text === "Quinn joined the channel.",
+        ),
+    );
     const unnamed = roomSchema.parse(await x.ok(["channel", "create"]));
     assert.equal(unnamed.name, "New channel");
   } finally {
@@ -791,6 +828,17 @@ test("bot CLI callers cannot inspect or administer another bot's private state",
       title: "Alpha",
       createdAt: Date.now(),
     });
+    const shared = roomSchema.parse(
+      await x.ok([
+        "channel",
+        "create",
+        "Shared admin",
+        "--bot",
+        a.id,
+        "--bot",
+        b.id,
+      ]),
+    );
     const ctx = { threadId: "thr_alpha" };
     const activity = (await x.ok(["activity"], ctx)) as { jobs: unknown[] };
     assert.deepEqual(activity.jobs, []);
@@ -811,6 +859,17 @@ test("bot CLI callers cannot inspect or administer another bot's private state",
     assert.equal(x.store.job(job.id)?.status, "queued");
     assert.equal(x.store.get(b.id).retired, undefined);
     assert.equal((await x.run(["mission", a.id], ctx)).exitCode, 0);
+    for (const args of [
+      ["channel", "rename", shared.id, "Hacked"],
+      ["channel", "invite", shared.id, b.id],
+      ["channel", "remove", shared.id, b.id],
+      ["channel", "archive", shared.id],
+      ["channel", "restore", shared.id],
+      ["channel", "delete", shared.id, "--yes"],
+    ])
+      assert.notEqual((await x.run(args, ctx)).exitCode, 0, args.join(" "));
+    assert.equal(x.store.room(shared.id).name, "Shared admin");
+    assert.equal(x.store.room(shared.id).archived, undefined);
   } finally {
     await x.close();
   }

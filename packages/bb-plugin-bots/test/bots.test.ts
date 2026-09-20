@@ -148,6 +148,25 @@ test("the first message gives a blank channel an agent-generated title", async (
   }
 });
 
+test("membership notices do not suppress the first channel title", async () => {
+  const x = setup();
+  try {
+    x.harness.inspection.sdk.stub("threads.output", async () => ({
+      output: "Launch room",
+    }));
+    x.harness.inspection.sdk.stub("threads.delete", async () => ({ ok: true }));
+    const blank: Room = { ...x.room, id: randomUUID(), name: "New channel" };
+    x.store.putRoom(blank);
+    x.runtime.postSystemMessage(blank, "Atlas joined the channel.", "bot_joined");
+    x.runtime.send(blank, "Discuss the launch plan", randomUUID());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(x.store.room(blank.id).name, "Launch room");
+    assert.equal(x.store.firstMessage(blank.id)?.text, "Discuss the launch plan");
+  } finally {
+    await x.close();
+  }
+});
+
 test("title workers treat hostile first messages as data and get no Bots tools", async () => {
   const x = setup();
   try {
@@ -1141,6 +1160,58 @@ test("lost spawn responses recover the exact accepted thread without resubmittin
   }
 });
 
+test("idle recovery settles a running no-output job as an error", async () => {
+  const x = setup();
+  try {
+    x.runtime.enqueue(x.a, {
+      id: "idle-no-output",
+      text: "work",
+      conversationKey: "mission",
+    });
+    await x.runtime.drive(x.a);
+    assert.equal(x.store.job("idle-no-output")!.status, "running");
+    x.harness.inspection.sdk.stub("threads.output", async () => ({
+      output: "",
+    }));
+    await x.runtime.drive(x.a);
+    const job = x.store.job("idle-no-output")!;
+    assert.equal(job.status, "error");
+    assert.match(job.error ?? "", /Dispatch outcome is unknown/);
+  } finally {
+    await x.close();
+  }
+});
+
+test("hourly limits count dispatches that never became active", async () => {
+  const x = setup();
+  try {
+    for (let i = 0; i < 30; i++) {
+      const id = `dispatch-${i}`;
+      x.runtime.enqueue(x.a, {
+        id,
+        text: "completed dispatch",
+        conversationKey: "mission",
+      });
+      const job = x.store.job(id)!;
+      job.status = "done";
+      job.dispatchStartedAt = Date.now();
+      x.store.putJob(job);
+    }
+    x.runtime.enqueue(x.a, {
+      id: "over-limit",
+      text: "work",
+      conversationKey: "mission",
+    });
+    await assert.rejects(
+      x.runtime.drive(x.a),
+      /Hourly limit reached \(30 automatic turns\)/,
+    );
+    assert.equal(x.store.job("over-limit")!.status, "queued");
+  } finally {
+    await x.close();
+  }
+});
+
 test("paused chats resume through core recheck and removed members cannot dispatch", async () => {
   const x = setup();
   await plugin(x.bb);
@@ -1302,7 +1373,18 @@ test("empty channels accept messages and invite mentioned bots atomically on sen
     assert.equal(x.store.work(x.a.id).length, 1);
     x.runtime.send(x.store.room(room.id), "@atlas please help", requestId);
     assert.equal(x.store.work(x.a.id).length, 1);
-    assert.equal(x.store.messages(room.id).length, 2);
+    assert.deepEqual(
+      x.store.messages(room.id).map((message) => message.text),
+      [
+        "Notes before anyone joins",
+        "@atlas please help",
+        "Atlas joined the channel.",
+      ],
+    );
+    assert.equal(
+      x.store.messages(room.id).filter((message) => message.system).length,
+      1,
+    );
     assert.equal(x.store.work(x.b.id).length, 0);
   } finally {
     await x.close();
@@ -1436,7 +1518,14 @@ test("incremental member updates preserve other invites and removal cancels work
     assert.deepEqual(x.store.room(x.room.id).memberIds, [x.b.id]);
     assert.equal(x.store.work(x.a.id).length, 0);
     assert.equal(x.store.work(x.b.id).length, 1);
-    assert.equal(x.store.messages(x.room.id).length, 1);
+    assert.deepEqual(
+      x.store
+        .messages(x.room.id)
+        .filter((message) => message.system)
+        .map((message) => message.text),
+      ["Atlas joined the channel.", "Scribe joined the channel."],
+    );
+    assert.equal(x.store.messages(x.room.id).length, 3);
   } finally {
     await x.close();
   }
@@ -1632,6 +1721,31 @@ test("the working stub stops the running response rather than a newer queued req
     assert.equal(x.store.job(current.id)?.status, "cancelled");
     assert.equal(x.store.work(x.a.id).length, 1);
     assert.equal(x.store.work(x.a.id)[0]?.status, "queued");
+  } finally {
+    await x.close();
+  }
+});
+
+test("cancel RPC reloads a registered job before stopping its thread", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    x.runtime.enqueue(x.a, {
+      id: "cancel-race",
+      text: "work",
+      conversationKey: "mission",
+      status: "running",
+      threadId: "thr_registered",
+    });
+    await x.harness.behavior.callRpc("cancelJob", {
+      id: "cancel-race",
+    });
+    assert.equal(x.store.job("cancel-race")!.status, "cancelled");
+    assert.equal(x.store.job("cancel-race")!.threadId, "thr_registered");
+    assert.deepEqual(
+      x.harness.inspection.sdk.callsTo("threads.stop").at(-1)?.[0],
+      { threadId: "thr_registered" },
+    );
   } finally {
     await x.close();
   }
@@ -2094,7 +2208,9 @@ test("agent tools create channels idempotently and attribute sends to the actual
     assert.equal(state.total, 2);
     assert.equal(state.complete, false);
     assert.equal(
-      (await call("bots_channel_read", { id: room.id })).messages[0].speaker,
+      (await call("bots_channel_read", { id: room.id })).messages.find(
+        (entry: { speaker?: string }) => entry.speaker === "BB agent",
+      )?.speaker,
       "BB agent",
     );
   } finally {
