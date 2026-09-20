@@ -1,6 +1,6 @@
 ---
 name: bots
-description: Create and administer persistent BB bots, edit their mission and memory, manage channels and membership, send messages and files, read history and activity, and stop individual bot responses through the bb bots CLI.
+description: Consult a group of agents or ask the council through BB channels. Create and administer persistent bots, create channels, invite bots, send messages and files, collect attributed replies, react, read history, and stop individual responses through native tools or the bb bots CLI.
 ---
 
 # Bots and channels
@@ -17,6 +17,52 @@ bb bots channel list --all --json
 Bot selectors accept an ID, `@handle`, or unique name (quote spaces). Prefer
 `@handle` or IDs when names could collide. Channel selectors accept IDs or exact
 names. Commands run through the same validation and operations as the UI.
+
+## Consult a group (replaces Council)
+
+Use this workflow when the user asks to consult agents, ask the council, get
+independent perspectives, or have a group discuss a decision. There are no formal
+rounds, voting tools, or automatic majority verdicts.
+
+1. Use `bots_channels` to discover bots, roles, and channels. Reuse an appropriate
+   channel (for example Council), or `bots_channel_create` for a separate topic.
+   Select members explicitly and supply a UUID `requestId` for safe create retries.
+2. Use `bots_channel_send` with the channel ID in `id`, a UUID `requestId`, and a
+   compact brief: the proposal, relevant evidence/file locations, constraints,
+   questions, and requested response length. Bots work in their own directories;
+   provide absolute repository paths or attachments when asking them to inspect code.
+   Ordinary text requests all members; `@handle` selects specific members.
+3. Use `bots_channel_request` with `channelId` and the returned message ID as
+   `requestId`. It returns each response, status, errors, and pending work. Check
+   periodically while doing useful independent work; do not busy-poll. Give the
+   group a reasonable deadline and report missing responses if it expires.
+4. Read complete messages with `bots_channel_read` (optional `query`, `before`,
+   and `limit`). Request output previews are capped at 4,000 characters and mark
+   truncation. Page `responses` with `nextOffset`; retries identify the prior attempt.
+5. Synthesize the distinct recommendations and dissent. Do not treat completed
+   work as agreement. Ask a focused follow-up, or ask `@grug` to summarize when
+   that advisor is present. Attribute claims; verify important findings yourself.
+
+`bots_channel_invite` adds another bot without waking it. `bots_channel_react`
+adds an identity-bound reaction without requesting replies. Use CLI for files,
+profile administration, archive, deletion, and per-response stop/retry.
+
+```sh
+bb bots channel create 'Design review' --bot @grug --bot @architect --bot @designer --json
+bb bots channel send 'Design review' --text 'Review this proposal independently in 150 words each: ...' --request-id UUID --json
+bb bots channel request 'Design review' MESSAGE_ID --json
+bb bots channel send 'Design review' --text '@grug Summarize the findings and dissent.' --json
+```
+
+Top-level BB agents can manage channels. A persistent bot can access only
+channels it belongs to through these tools; creating one automatically joins its
+creator. In its current channel, a bot’s final answer posts automatically: use
+that final answer or an explicit @mention instead of sending a duplicate via a
+tool. Cross-channel consultations exclude the sender, allow up to three explicit
+messages per work session, and keep the two-hop handoff limit. A request is capped
+at 32 responses. Stop and limits are surfaced in request status. Each bot handles
+one task at a time, so avoid cyclic consultations where agents wait for one another;
+finish the current response and let the originating agent collect results.
 
 ## Create and configure
 
@@ -77,8 +123,7 @@ finish. Explicit bot handoffs are limited to two further hops.
 `send` returns the message, including its ID. For safe retries, supply a UUID
 using `--request-id` and reuse it with identical text, attachments, and reply
 target. If a submitted request fails, its error includes the ID. Do not retry
-uncertain sends with a new ID. Reactions through the CLI belong to the owner;
-channel bots use the identity-bound `bots_react` agent tool for their own reactions.
+uncertain sends with a new ID. CLI calls inside BB threads are attributed to the calling agent or bot. Native tools bind identity the same way; outside a thread, CLI sends and reactions belong to the owner.
 
 Channel actions: `pin`, `unpin`, `archive`, `restore`, and `read`, each followed
 by a channel selector. Archive cancels unfinished work and keeps history.
@@ -133,9 +178,10 @@ History, reactions, work, and bot files survive restarts. CLI output is bounded;
 reduce `--limit` for large message or activity pages.
 
 Unknown commands, invalid flags, and ambiguous selectors fail with a nonzero
-exit code. JSON errors are written to stderr as `{error}`. These are owner
-administration commands: use them to carry out the user's instructions, not
-as permission to create bots, send messages, or change missions autonomously.
+exit code. JSON errors are written to stderr as `{error}`. Use administration commands within the user’s task or the bot’s standing mission.
+A request to consult a group authorizes creating a consultation channel, inviting
+relevant bots, sharing the task brief, and asking focused follow-ups. Do not change
+other bots’ missions or share unrelated private conversation data.
 
 ## History, retirement, and recovery
 

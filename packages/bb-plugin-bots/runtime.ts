@@ -35,6 +35,12 @@ export function recipients(text: string, members: Bot[]) {
 }
 export const jobPrompt = (job: Job) =>
   `Read MISSION.md and MEMORY.md before acting.\n\n${job.text}\n\nRequest: ${job.id}`;
+export type MessageAuthor = {
+  botId: string | null;
+  speaker: string;
+  sourceThreadId: string;
+  depth: number;
+};
 export class Runtime {
   private locks = new Map<string, Promise<unknown>>();
   readonly busy = new Map<string, { threadId: string; at: number }>();
@@ -103,6 +109,11 @@ export class Runtime {
       providerId: bot.providerId,
       ...(bot.model ? { model: bot.model } : {}),
       reasoningLevel: bot.reasoningLevel,
+      executionInputSources: {
+        providerId: "explicit",
+        ...(bot.model ? { model: "explicit" as const } : {}),
+        reasoningLevel: "explicit",
+      },
       permissionMode: bot.permissionMode,
       pluginMetadata: { botId: bot.id, conversationKey: key },
     });
@@ -163,11 +174,14 @@ export class Runtime {
     requestId: string,
     attachments: Attachment[] = [],
     replyTo: string | null = null,
+    author?: MessageAuthor,
   ): RoomMessage {
     const existing = this.store.message(requestId);
     if (existing) {
       if (
         existing.roomId !== room.id ||
+        existing.botId !== (author?.botId ?? null) ||
+        existing.sourceThreadId !== author?.sourceThreadId ||
         existing.text !== text ||
         existing.replyTo !== replyTo ||
         JSON.stringify(existing.attachments.map((a) => a.id)) !==
@@ -184,7 +198,24 @@ export class Runtime {
       throw new Error("Restore this channel before sending a message.");
     if (replyTo && this.store.message(replyTo)?.roomId !== room.id)
       throw new Error("Reply message not found in this group.");
-    // Only owner messages may invite new bots. This is committed with the message,
+    if (
+      author?.botId &&
+      (
+        this.store.db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM room_messages WHERE json_extract(json,'$.sourceThreadId')=?",
+          )
+          .get(author.sourceThreadId) as { n: number }
+      ).n >= 3
+    )
+      throw new Error(
+        "This response has already sent three consultation messages. Summarize the results before requesting more work.",
+      );
+    if (author && author.depth > 2)
+      throw new Error(
+        "Bot consultation handoff limit reached. Return your findings to the requesting channel.",
+      );
+    // Explicit sends may invite new bots. This is committed with the message,
     // so editing a draft or retrying a lost response cannot change membership.
     if (
       this.store.all().some((bot) => bot.retired && mentioned(text, bot.handle))
@@ -218,8 +249,9 @@ export class Runtime {
       id: requestId,
       roomId: room.id,
       runId: run.id,
-      botId: null,
-      speaker: "You",
+      botId: author?.botId ?? null,
+      speaker: author?.speaker ?? "You",
+      ...(author ? { sourceThreadId: author.sourceThreadId } : {}),
       text,
       createdAt: now,
       attachments,
@@ -232,7 +264,8 @@ export class Runtime {
         text,
         room.memberIds.map((id) => this.store.get(id)),
       ))
-        this.invite(room, run, m, botId, 0);
+        if (botId !== author?.botId)
+          this.invite(room, run, m, botId, author?.depth ?? 0);
       if (!run.pendingJobIds.length) run.status = "done";
       this.store.putRun(run);
       this.store.putRoom({ ...room, updatedAt: now });
@@ -250,6 +283,11 @@ export class Runtime {
     if (!room.memberIds.includes(botId)) return;
     const bot = this.store.get(botId);
     if (bot.retired) return;
+    if (run.pendingJobIds.length + run.settledJobIds.length >= 32) {
+      run.error =
+        "This request reached its 32-response limit. Send a focused follow-up to continue.";
+      return;
+    }
     // Deterministic delivery identity makes recovery and repeated collection idempotent.
     const id = `${trigger.id}:${botId}`;
     if (
@@ -290,7 +328,7 @@ export class Runtime {
       ? this.store.message(trigger.replyTo)
       : null;
     job.text = [
-      `You are @${bot.handle} in the group chat ${room.name}. Other members may be working at the same time.`,
+      `You are @${bot.handle} in the group chat ${room.name} (channel ID ${room.id}). Other members may be working at the same time.`,
       "Members:",
       roster,
       "",
@@ -762,8 +800,12 @@ export class Runtime {
         );
       if (current.status === "dispatching") {
         current.status = "error";
-        current.error =
-          "Dispatch outcome is unknown. Inspect the conversation before sending again.";
+        current.error = [
+          "Dispatch outcome is unknown. Inspect the conversation before sending again.",
+          current.error,
+        ]
+          .filter(Boolean)
+          .join(" ");
         this.store.putJob(current);
         this.changed();
       }

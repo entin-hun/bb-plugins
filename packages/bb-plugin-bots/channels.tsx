@@ -1096,6 +1096,8 @@ function ChannelChat({ id }: { id: string }) {
           const compact =
             !newDay &&
             previous?.botId === m.botId &&
+            previous?.sourceThreadId === m.sourceThreadId &&
+            previous?.speaker === m.speaker &&
             m.createdAt - previous.createdAt < 5 * 60000 &&
             !m.replyTo;
           const parent = m.replyTo
@@ -1125,7 +1127,11 @@ function ChannelChat({ id }: { id: string }) {
                 tabIndex={0}
               >
                 <span className="bot-message-avatar" aria-hidden>
-                  {compact ? "" : (bot?.avatar ?? <Icon name="UserRound" />)}
+                  {compact
+                    ? ""
+                    : (bot?.avatar ?? (
+                        <Icon name={m.sourceThreadId ? "Bot" : "UserRound"} />
+                      ))}
                 </span>
                 <div className="bot-message-body">
                   {!compact && (
@@ -1233,12 +1239,16 @@ function ChannelChat({ id }: { id: string }) {
                     >
                       <Icon name={copied === m.id ? "Check" : "Copy"} />
                     </Button>
-                    {job?.threadId && (
+                    {(job?.threadId || m.sourceThreadId) && (
                       <Button
                         variant="ghost"
                         size="icon"
                         aria-label={`View ${m.speaker}'s work`}
-                        onClick={() => navigate.toThread(job.threadId!)}
+                        onClick={() =>
+                          navigate.toThread(
+                            (job?.threadId ?? m.sourceThreadId)!,
+                          )
+                        }
                       >
                         <Icon name="ExternalLink" />
                       </Button>

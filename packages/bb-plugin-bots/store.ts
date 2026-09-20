@@ -263,6 +263,15 @@ export class Store {
         .all(roomId) as { json: string }[]
     ).map((r) => runSchema.parse(JSON.parse(r.json)));
   }
+  requestJobs(runId: string): Job[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT json FROM jobs WHERE json_extract(json,'$.runId')=? ORDER BY created_at,rowid",
+        )
+        .all(runId) as { json: string }[]
+    ).map((r) => jobSchema.parse(JSON.parse(r.json)));
+  }
   putRun(r: RoomRun) {
     this.db
       .prepare(

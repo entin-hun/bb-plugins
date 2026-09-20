@@ -5,7 +5,8 @@ Plugins for [bb](https://github.com/patleeman/bb).
 ## Packages
 
 - [`bb-plugin-bots`](packages/bb-plugin-bots/) — persistent agents with their
-  own workspaces, mission and memory files, profiles, and sidebar channels.
+  own workspaces, mission and memory files, profiles, sidebar channels, and
+  group consultations that replace the former Council plugin.
 - [`bb-plugin-agent-checklists`](packages/bb-plugin-agent-checklists/) — attach
   persisted structured checklists to threads, update them with agent tools,
   and continue incomplete work automatically.
@@ -20,8 +21,6 @@ Plugins for [bb](https://github.com/patleeman/bb).
   to agents.
 - [`bb-plugin-cobalt2`](packages/bb-plugin-cobalt2/) — contribute the Cobalt2
   color palette to bb.
-- [`bb-plugin-council`](packages/bb-plugin-council/) — convene advisor agents
-  for independent review, discussion, and a verdict with dissent.
 - [`bb-plugin-ds4`](packages/bb-plugin-ds4/) — run and administer a local
   DwarfStar (`ds4`) inference server from bb.
 - [`bb-plugin-excalidraw`](packages/bb-plugin-excalidraw/) — create, edit, and

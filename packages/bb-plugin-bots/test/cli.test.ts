@@ -699,11 +699,111 @@ test("filtered bot list pagination counts only visible bots", async () => {
   const x = await setup();
   try {
     const b = await x.create("Visible");
-    for (let i = 0; i < 60; i++) x.store.put({ ...b, id: `bot_${i.toString(16).padStart(16, "0")}`, handle: `retired-${i}`, retired: true });
-    const active = await x.ok(["list"]) as {bots: unknown[]; nextOffset: number | null};
-    assert.equal(active.bots.length, 1); assert.equal(active.nextOffset, null);
-    const retired = await x.ok(["list", "--retired"]) as {bots:unknown[]; nextOffset:number};
-    assert.equal(retired.bots.length, 50); assert.equal(retired.nextOffset, 50);
+    for (let i = 0; i < 60; i++)
+      x.store.put({
+        ...b,
+        id: `bot_${i.toString(16).padStart(16, "0")}`,
+        handle: `retired-${i}`,
+        retired: true,
+      });
+    const active = (await x.ok(["list"])) as {
+      bots: unknown[];
+      nextOffset: number | null;
+    };
+    assert.equal(active.bots.length, 1);
+    assert.equal(active.nextOffset, null);
+    const retired = (await x.ok(["list", "--retired"])) as {
+      bots: unknown[];
+      nextOffset: number;
+    };
+    assert.equal(retired.bots.length, 50);
+    assert.equal(retired.nextOffset, 50);
     assert.equal((await x.run(["list", "--retired", "--all"])).exitCode, 2);
-  } finally { await x.close(); }
+  } finally {
+    await x.close();
+  }
+});
+
+test("CLI agent sends preserve caller identity and expose consultation status", async () => {
+  const x = await setup();
+  try {
+    const b = await x.create();
+    const requestId = randomUUID();
+    const args = [
+      "channel",
+      "create",
+      "Review",
+      "--bot",
+      b.id,
+      "--request-id",
+      requestId,
+    ];
+    const room = roomSchema.parse(await x.ok(args));
+    assert.equal(roomSchema.parse(await x.ok(args)).id, room.id);
+    const m = messageSchema.parse(
+      await x.ok(["channel", "send", room.id, "--text", "Review this"], {
+        threadId: "thr_agent",
+      }),
+    );
+    assert.equal(m.speaker, "BB agent");
+    assert.equal(m.sourceThreadId, "thr_agent");
+    const status = (await x.ok(["channel", "request", room.id, m.id])) as {
+      complete: boolean;
+      total: number;
+    };
+    assert.equal(status.complete, false);
+    assert.equal(status.total, 1);
+    assert.notEqual(
+      (await x.run(["channel", "request", room.id, "missing"])).exitCode,
+      0,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("bot CLI callers cannot inspect or administer another bot's private state", async () => {
+  const x = await setup();
+  try {
+    const a = await x.create("Alpha"),
+      b = await x.create("Beta");
+    const room = roomSchema.parse(
+      await x.ok(["channel", "create", "Private Beta", "--bot", b.id]),
+    );
+    const message = messageSchema.parse(
+      await x.ok(["channel", "send", room.id, "--text", "Private brief"]),
+    );
+    const job = x.store.requestJobs(message.id)[0]!;
+    x.store.putConversation({
+      id: "alpha-admin",
+      botId: a.id,
+      key: "admin",
+      kind: "admin",
+      threadId: "thr_alpha",
+      title: "Alpha",
+      createdAt: Date.now(),
+    });
+    const ctx = { threadId: "thr_alpha" };
+    const activity = (await x.ok(["activity"], ctx)) as { jobs: unknown[] };
+    assert.deepEqual(activity.jobs, []);
+    for (const args of [
+      ["activity", "--bot", b.id],
+      ["activity", "--channel", room.id],
+      ["job", job.id],
+      ["stop", job.id],
+      ["retry", job.id],
+      ["memory", b.id],
+      ["mission", b.id],
+      ["memory", b.id, "--text", "Overwrite"],
+      ["update", b.id, "--description", "Change"],
+      ["retire", b.id],
+      ["channel", "messages", room.id],
+    ])
+      assert.notEqual((await x.run(args, ctx)).exitCode, 0, args.join(" "));
+    assert.equal(x.store.job(job.id)?.status, "queued");
+    assert.equal(x.store.get(b.id).retired, undefined);
+    assert.equal((await x.run(["mission", a.id], ctx)).exitCode, 0);
+  } finally {
+    await x.close();
+  }
 });

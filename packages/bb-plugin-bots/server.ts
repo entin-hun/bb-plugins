@@ -15,6 +15,11 @@ import {
 import { Store, newId, document, saveDocument } from "./store";
 import { Runtime, jobPrompt } from "./runtime";
 import { registerCli } from "./cli";
+import {
+  registerChannelTools,
+  agentAuthor,
+  authorizeChannel,
+} from "./agent-channels";
 export { rpcContract } from "./contract";
 
 export default async function plugin(bb: BbPluginApi) {
@@ -110,6 +115,62 @@ export default async function plugin(bb: BbPluginApi) {
     )
       throw new Error("A channel with this name already exists.");
   }
+  const sendMessage = (
+    input: z.output<typeof rpcContract.send.input>,
+    threadId?: string,
+  ) => {
+    const { id, text, requestId, attachmentIds, replyTo } = input;
+    return runtime.locked(`room:${id}`, async () => {
+      const room = store.room(id);
+      if (threadId) authorizeChannel(store, threadId, id);
+      if (threadId) agentAuthor(store, threadId, id);
+      const attachments = attachmentIds.map((key) => {
+        const a = store.attachment(key);
+        if (a.roomId !== id)
+          throw new Error("Attachment belongs to a different group.");
+        return a;
+      });
+      if (store.message(requestId))
+        return runtime.send(
+          room,
+          text,
+          requestId,
+          attachments,
+          replyTo,
+          threadId ? agentAuthor(store, threadId, id) : undefined,
+        );
+      if (room.archived)
+        throw new Error("Restore this channel before sending a message.");
+      if (!text.trim() && !attachments.length)
+        throw new Error("Write a message or attach a file.");
+      if (replyTo && store.message(replyTo)?.roomId !== id)
+        throw new Error("Reply message not found in this group.");
+      for (const a of attachments) {
+        if (a.path) continue;
+        const bytes = store.stagedAttachment(a.id);
+        if (!bytes)
+          throw new Error(
+            "This draft attachment has expired. Attach the file again.",
+          );
+        const uploaded = await bb.sdk.projects.attachments.upload({
+          projectId: a.projectId,
+          clientFile: bytes,
+          filename: a.name,
+          mimeType: a.mimeType,
+        });
+        Object.assign(a, uploaded);
+        store.putAttachment(a);
+      }
+      return runtime.send(
+        room,
+        text,
+        requestId,
+        attachments,
+        replyTo,
+        threadId ? agentAuthor(store, threadId, id) : undefined,
+      );
+    });
+  };
   const handlers: PluginRpcHandlers<typeof rpcContract> = {
     list: () => ({ bots: store.all(), rooms: store.rooms() }),
     create: (input) =>
@@ -206,8 +267,20 @@ export default async function plugin(bb: BbPluginApi) {
       runtime.locked(id, () =>
         runtime.conversation(store.get(id), "admin", "admin", "Bot chat"),
       ),
-    createRoom: ({ name, memberIds }) =>
+    createRoom: ({ name, memberIds, requestId }) =>
       runtime.locked("rooms", async () => {
+        const existing =
+          requestId && store.rooms().find((r) => r.id === requestId);
+        if (existing) {
+          if (
+            (name !== undefined && existing.name !== name) ||
+            JSON.stringify(existing.memberIds) !== JSON.stringify(memberIds)
+          )
+            throw new Error(
+              "Channel request ID was already used for different content.",
+            );
+          return existing;
+        }
         if (name === undefined) {
           const names = new Set(store.rooms().map((r) => r.name.toLowerCase()));
           name = "New channel";
@@ -216,7 +289,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         validateRoom(name, memberIds);
         const room: Room = {
-          id: randomUUID(),
+          id: requestId ?? randomUUID(),
           name,
           memberIds,
           paused: false,
@@ -320,41 +393,7 @@ export default async function plugin(bb: BbPluginApi) {
         prompt,
       });
     },
-    send: ({ id, text, requestId, attachmentIds, replyTo }) =>
-      runtime.locked(`room:${id}`, async () => {
-        const room = store.room(id);
-        const attachments = attachmentIds.map((key) => {
-          const a = store.attachment(key);
-          if (a.roomId !== id)
-            throw new Error("Attachment belongs to a different group.");
-          return a;
-        });
-        if (store.message(requestId))
-          return runtime.send(room, text, requestId, attachments, replyTo);
-        if (room.archived)
-          throw new Error("Restore this channel before sending a message.");
-        if (!text.trim() && !attachments.length)
-          throw new Error("Write a message or attach a file.");
-        if (replyTo && store.message(replyTo)?.roomId !== id)
-          throw new Error("Reply message not found in this group.");
-        for (const a of attachments) {
-          if (a.path) continue;
-          const bytes = store.stagedAttachment(a.id);
-          if (!bytes)
-            throw new Error(
-              "This draft attachment has expired. Attach the file again.",
-            );
-          const uploaded = await bb.sdk.projects.attachments.upload({
-            projectId: a.projectId,
-            clientFile: bytes,
-            filename: a.name,
-            mimeType: a.mimeType,
-          });
-          Object.assign(a, uploaded);
-          store.putAttachment(a);
-        }
-        return runtime.send(room, text, requestId, attachments, replyTo);
-      }),
+    send: (input) => sendMessage(input),
     member: ({ id, botId, present }) =>
       runtime.locked(`room:${id}`, async () => {
         const room = store.room(id);
@@ -489,13 +528,14 @@ export default async function plugin(bb: BbPluginApi) {
       return JSON.stringify({ ok: true });
     },
   });
+  const channelTools = registerChannelTools(bb, store, handlers, sendMessage);
   bb.agents.configure((context) => {
     const c = store.byThread(context.thread.id);
-    if (!c) return { tools: [], skills: ["bots"] };
+    if (!c) return { tools: channelTools, skills: ["bots"] };
     const bot = store.get(c.botId);
     return {
-      tools: c.kind === "group" ? ["bots_react"] : [],
-      skills: [],
+      tools: [...channelTools, ...(c.kind === "group" ? ["bots_react"] : [])],
+      skills: ["bots"],
       instructions: [
         `You are the persistent bot ${JSON.stringify(bot.name)} (@${bot.handle}). Your workspace is ${JSON.stringify(bot.home)}.`,
         "Read MISSION.md and MEMORY.md at the beginning of every turn, including follow-ups. Keep durable memory up to date.",
@@ -609,6 +649,6 @@ export default async function plugin(bb: BbPluginApi) {
       }
     },
   });
-  registerCli(bb, store, handlers);
+  registerCli(bb, store, handlers, sendMessage);
   bb.onDispose(() => runtime.dispose());
 }

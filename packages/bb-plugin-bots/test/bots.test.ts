@@ -12,6 +12,7 @@ import {
   makeMessageDispatchHookContext,
 } from "@get-bb/plugin-sdk/testing";
 import plugin from "../server";
+import { agentAuthor, requestStatus } from "../agent-channels";
 import { channelWork } from "../channel-work";
 import { Store, document, saveDocument } from "../store";
 import { Runtime, jobPrompt, mentioned, recipients } from "../runtime";
@@ -54,6 +55,10 @@ const setup = () => {
       },
       threads: {
         spawn: async (args) => {
+          assert.equal(args.executionInputSources?.providerId, "explicit");
+          assert.equal(args.executionInputSources?.reasoningLevel, "explicit");
+          if (args.model)
+            assert.equal(args.executionInputSources?.model, "explicit");
           assert.ok(
             args.input?.some((i) => i.type === "text" && i.text.trim()),
             "BB requires nonempty first input",
@@ -412,7 +417,8 @@ test("unrelated threads cannot claim a bot identity using metadata", async () =>
         pluginMetadata: { botId: "bot_0123456789abcdef" },
       }),
     );
-    assert.deepEqual(result.tools, []);
+    assert.ok(result.tools.some((t) => t.name === "bots_channel_send"));
+    assert.ok(!result.tools.some((t) => t.name === "bots_react"));
     assert.equal(result.instructions, null);
     assert.deepEqual(await host.harness.behavior.callRpc("list", null), {
       bots: [],
@@ -1687,12 +1693,295 @@ test("retry racing with deletion returns a clear unavailable error", async () =>
   const x = setup();
   try {
     x.runtime.send(x.room, "@atlas work", randomUUID());
-    const job = x.store.work(x.a.id)[0]!; x.store.putJob({ ...job, status: "error", error: "Failed" });
-    const entered = deferred<void>(), finish = deferred<void>();
-    const deleting = x.runtime.locked(`room:${x.room.id}`, async () => { entered.resolve(); await finish.promise; x.store.deleteRoom(x.room.id); });
+    const job = x.store.work(x.a.id)[0]!;
+    x.store.putJob({ ...job, status: "error", error: "Failed" });
+    const entered = deferred<void>(),
+      finish = deferred<void>();
+    const deleting = x.runtime.locked(`room:${x.room.id}`, async () => {
+      entered.resolve();
+      await finish.promise;
+      x.store.deleteRoom(x.room.id);
+    });
     await entered.promise;
     const retry = x.runtime.retryJob(job.id);
-    finish.resolve(); await deleting;
+    finish.resolve();
+    await deleting;
     await assert.rejects(retry, /no longer available/);
-  } finally { await x.close(); }
+  } finally {
+    await x.close();
+  }
+});
+
+test("agent tools create channels idempotently and attribute sends to the actual caller", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    const call = async (
+      name: string,
+      input: unknown,
+      threadId = "thr_orchestrator",
+    ) => {
+      const result = await x.harness.behavior.callAgentTool(name, input, {
+        threadId,
+      });
+      assert.equal(typeof result, "string");
+      return JSON.parse(result as string);
+    };
+    const requestId = randomUUID();
+    const input = {
+      name: "Consultation",
+      memberIds: [x.a.id, x.b.id],
+      requestId,
+    };
+    const room = await call("bots_channel_create", input);
+    assert.equal((await call("bots_channel_create", input)).id, room.id);
+    assert.equal(x.store.rooms().length, 2);
+    await assert.rejects(
+      call("bots_channel_create", { ...input, name: "Different" }),
+      /different content/,
+    );
+    const send = {
+      id: room.id,
+      text: "Review this choice",
+      requestId: randomUUID(),
+      botId: x.a.id,
+      speaker: "You",
+    };
+    const message = await call("bots_channel_send", send);
+    assert.equal(message.botId, null);
+    assert.equal(message.speaker, "BB agent");
+    assert.equal(message.sourceThreadId, "thr_orchestrator");
+    assert.equal((await call("bots_channel_send", send)).id, message.id);
+    await assert.rejects(
+      call("bots_channel_send", send, "thr_other"),
+      /different content/,
+    );
+    const state = await call("bots_channel_request", {
+      channelId: room.id,
+      requestId: message.id,
+    });
+    assert.equal(state.total, 2);
+    assert.equal(state.complete, false);
+    assert.equal(
+      (await call("bots_channel_read", { id: room.id })).messages[0].speaker,
+      "BB agent",
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("consultation status includes errors, PASS, cancellation, and only settles after publication", async () => {
+  const x = setup();
+  try {
+    const m = x.runtime.send(x.room, "Review", randomUUID());
+    const [a, b] = x.store.requestJobs(m.id);
+    x.store.putJob({ ...a!, status: "done", reply: "[PASS]" });
+    x.store.putJob({ ...b!, status: "error", error: "Provider unavailable" });
+    assert.equal(requestStatus(x.store, x.room.id, m.id).complete, false);
+    await x.runtime.driveRoom(x.room);
+    let state = requestStatus(x.store, x.room.id, m.id, 1);
+    assert.equal(state.complete, true);
+    assert.equal(state.failed, 1);
+    assert.equal(state.nextOffset, 1);
+    assert.equal(state.responses[0]!.reply, "[PASS]");
+    assert.equal(x.store.messages(x.room.id).length, 1);
+    x.store.putJob({ ...b!, status: "cancelled", cancellationPending: true });
+    state = requestStatus(x.store, x.room.id, m.id);
+    assert.equal(state.complete, false);
+    assert.equal(state.cancelled, 1);
+    await assert.rejects(async () =>
+      requestStatus(x.store, randomUUID(), m.id),
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("bot consultation identity, self-response prevention, and handoff limits survive cross-channel sends", async () => {
+  const x = setup();
+  try {
+    x.runtime.send(x.room, "@atlas review", randomUUID());
+    await x.runtime.drive(x.a);
+    const j = x.store.work(x.a.id)[0]!;
+    assert.ok(j.threadId);
+    // Fake host does not deliver active events, so mark the accepted turn running.
+    x.store.putJob({ ...j, status: "running" });
+    assert.throws(
+      () => agentAuthor(x.store, j.threadId!, x.room.id),
+      /final answer/,
+    );
+    const room = { ...x.room, id: randomUUID(), name: "Other" };
+    x.store.putRoom(room);
+    const author = agentAuthor(x.store, j.threadId!, room.id);
+    assert.equal(author.botId, x.a.id);
+    assert.equal(author.depth, 1);
+    for (let i = 0; i < 3; i++) {
+      const message = x.runtime.send(
+        room,
+        "Review",
+        randomUUID(),
+        [],
+        null,
+        author,
+      );
+      assert.deepEqual(
+        x.store.requestJobs(message.id).map((j) => j.botId),
+        [x.b.id],
+      );
+    }
+    assert.throws(
+      () => x.runtime.send(room, "More", randomUUID(), [], null, author),
+      /three consultation/,
+    );
+    x.store.putJob({ ...j, status: "running", depth: 2 });
+    const deep = agentAuthor(x.store, j.threadId!, room.id);
+    assert.equal(deep.depth, 3);
+    assert.throws(
+      () =>
+        x.runtime.send(room, "More", randomUUID(), [], null, {
+          ...deep,
+          sourceThreadId: "another",
+        }),
+      /handoff limit/,
+    );
+    x.store.putJob({ ...j, status: "cancelled" });
+    assert.throws(
+      () => agentAuthor(x.store, j.threadId!, room.id),
+      /no longer active/,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("a consultation caps mention fan-out at 32 responses", async () => {
+  const x = setup();
+  try {
+    const members = [
+      x.a,
+      x.b,
+      ...Array.from({ length: 14 }, (_, i) =>
+        bot(
+          `/tmp/m${i}`,
+          `bot_${(i + 500).toString(16).padStart(16, "0")}`,
+          `Peer${i}`,
+        ),
+      ),
+    ];
+    members.forEach((b) => x.store.put(b));
+    const room = { ...x.room, memberIds: members.map((b) => b.id) };
+    x.store.putRoom(room);
+    const m = x.runtime.send(room, "Discuss", randomUUID());
+    for (const job of x.store.requestJobs(m.id))
+      x.store.putJob({
+        ...job,
+        status: "done",
+        reply: members.map((b) => `@${b.handle}`).join(" "),
+      });
+    await x.runtime.driveRoom(room);
+    assert.equal(x.store.requestJobs(m.id).length, 32);
+    assert.match(
+      requestStatus(x.store, room.id, m.id).error!,
+      /32-response limit/,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("bot tools require target membership and auto-join channels they create", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    x.runtime.send(x.room, "@atlas Check", randomUUID());
+    await x.runtime.drive(x.a);
+    const job = x.store.work(x.a.id)[0]!;
+    x.store.putJob({ ...job, status: "running" });
+    const threadId = job.threadId!;
+    const call = (name: string, input: unknown) =>
+      x.harness.behavior.callAgentTool(name, input, { threadId });
+    const privateRoom = {
+      ...x.room,
+      id: randomUUID(),
+      name: "Private",
+      memberIds: [x.b.id],
+    };
+    x.store.putRoom(privateRoom);
+    const request = x.runtime.send(
+      privateRoom,
+      "Private context",
+      randomUUID(),
+    );
+    for (const [name, input] of [
+      ["bots_channel_read", { id: privateRoom.id }],
+      [
+        "bots_channel_request",
+        { channelId: privateRoom.id, requestId: request.id },
+      ],
+      [
+        "bots_channel_send",
+        { id: privateRoom.id, text: "Hello", requestId: randomUUID() },
+      ],
+      ["bots_channel_invite", { channelId: privateRoom.id, botId: x.a.id }],
+      [
+        "bots_channel_react",
+        {
+          id: privateRoom.id,
+          messageId: request.id,
+          emoji: "✅",
+          active: true,
+        },
+      ],
+    ] as const)
+      await assert.rejects(call(name, input), /invited|Join/);
+    const catalog = JSON.parse((await call("bots_channels", {})) as string);
+    assert.ok(!catalog.channels.some((r: Room) => r.id === privateRoom.id));
+    const own = JSON.parse(
+      (await call("bots_channel_create", {
+        name: "My consultation",
+        memberIds: [x.b.id],
+        requestId: randomUUID(),
+      })) as string,
+    );
+    assert.ok(own.memberIds.includes(x.a.id));
+    const m = JSON.parse(
+      (await call("bots_channel_send", {
+        id: own.id,
+        text: "Review",
+        requestId: randomUUID(),
+      })) as string,
+    );
+    assert.equal(m.botId, x.a.id);
+    assert.equal(m.speaker, x.a.name);
+    await call("bots_channel_react", {
+      id: own.id,
+      messageId: m.id,
+      emoji: "✅",
+      active: true,
+    });
+    assert.equal(x.store.reactions(own.id)[0]?.actorId, x.a.id);
+  } finally {
+    await x.close();
+  }
+});
+
+test("resolved retries no longer count as failed consultation responses", async () => {
+  const x = setup();
+  try {
+    const message = x.runtime.send(x.room, "@atlas Review", randomUUID());
+    const job = x.store.requestJobs(message.id)[0]!;
+    x.store.putJob({ ...job, status: "error", error: "Temporary" });
+    await x.runtime.driveRoom(x.room);
+    const retry = await x.runtime.retryJob(job.id);
+    x.store.putJob({ ...retry, status: "done", reply: "Ready" });
+    await x.runtime.driveRoom(x.room);
+    const state = requestStatus(x.store, x.room.id, message.id);
+    assert.equal(state.complete, true);
+    assert.equal(state.failed, 0);
+    assert.equal(state.error, null);
+    assert.equal(state.responses[0]?.supersededBy, retry.id);
+  } finally {
+    await x.close();
+  }
 });

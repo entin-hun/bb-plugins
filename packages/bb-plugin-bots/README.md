@@ -86,6 +86,64 @@ See the [Bots CLI skill](skills/bots/SKILL.md) for the full command guide,
 pagination, safe retries, and file handling. BB agents can discover the skill
 and command metadata directly.
 
+## Agent consultations
+
+Channels replace the Council plugin. Any BB agent can discover advisors, create a
+channel, invite bots, post a brief, collect replies and failures, ask follow-ups,
+and react through seven native tools: `bots_channels`, `bots_channel_create`,
+`bots_channel_invite`, `bots_channel_send`, `bots_channel_read`,
+`bots_channel_request`, and `bots_channel_react`. The bundled skill teaches this
+workflow, including requests to “ask the council.”
+
+Messages sent from BB threads show the calling bot or **BB agent**, with a link
+to its work. Identity comes from the session. Standalone CLI calls still represent
+the owner. Native tools and CLI sends bind safe retries to the sender as well as
+the message. Channel creation accepts `--request-id UUID` for safe retries too.
+
+```sh
+bb bots channel create 'Design review' --bot @grug --bot @architect --bot @designer --json
+bb bots channel send 'Design review' --text 'Assess this proposal independently: ...' --json
+bb bots channel request 'Design review' MESSAGE_ID --json
+bb bots channel send 'Design review' --text '@grug Summarize the findings and dissent.' --json
+```
+
+Request status includes pending work, per-bot replies, errors, cancellations,
+retry relationships, and completion. Previews over 4,000 characters are marked;
+read full messages through history. Completed work does not imply consensus.
+The requesting agent synthesizes the advice, or asks a selected bot to do so.
+There are no formal voting rounds.
+
+Persistent bot tools require membership in the target channel, and creating a
+channel joins its bot creator automatically. The bot’s final answer posts to its
+current channel, so duplicate tool sends there are rejected. Cross-channel
+requests exclude their sender and allow three sends per work session. Handoffs
+stay within two hops; a request stops adding replies at 32 responses and reports
+that limit. These rules prevent runaway consultation loops.
+
+### Migrate from Council
+
+On the BB server machine, with Bots installed:
+
+```sh
+node scripts/migrate-council-to-bots.mjs --data-dir /absolute/path/to/BB/data
+node scripts/migrate-council-to-bots.mjs --data-dir /absolute/path/to/BB/data --apply
+```
+
+The first command previews the migration. Apply backs up the complete Council
+SQLite database and settings under `plugins/bots/imports/council-v1`, disables
+Council, imports every member’s exact persona and configured provider/model/
+reasoning, and creates Council and preset channels. Chief advisors retain a
+synthesis role in their mission; disabled members are retired. Schedules remain
+off. Imported IDs are recorded for safe reruns; conflicting profiles are never
+overwritten. Private personas and session history are not committed to Git.
+
+Finish running Council sessions first. If a member inherits execution settings,
+set its effective provider, model, and reasoning explicitly in Council before
+migrating; the script refuses to guess. It also verifies the CLI connects to the
+specified data directory. After verifying the new bots and channel, run
+`bb plugin remove council`. Existing legacy sessions remain in the private backup;
+they are not converted into new conversations or rerun.
+
 ## Install and develop
 
 ```sh
@@ -130,3 +188,8 @@ See [verification notes](docs/QA.md) for test coverage and live walkthrough resu
 ![Search across channel history in the running BB app](assets/channel-search.png)
 
 The search preview shows both demo bots’ replies to the staged launch brief.
+
+The migrated Council channel, with live replies from Grug, Architect, and Designer
+and the compact membership menu. Their original model and reasoning choices are retained.
+
+![Council advisors consulting through a BB channel](assets/channel-consultation.png)

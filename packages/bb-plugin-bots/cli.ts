@@ -10,6 +10,14 @@ import {
 import { z } from "zod";
 import { rpcContract, type ProfileInput } from "./contract";
 import type { Store } from "./store";
+import {
+  channelReaction,
+  requestStatus,
+  creatorMembers,
+  authorizeChannel,
+  agentAuthor,
+  type SendMessage,
+} from "./agent-channels";
 
 type Method = keyof typeof rpcContract;
 type Output<K extends Method> = z.output<(typeof rpcContract)[K]["output"]>;
@@ -80,7 +88,12 @@ const commands = [
   [
     "channel create",
     "Create an empty or populated channel",
-    "[name] [--bot BOT ...]",
+    "[name] [--bot BOT ...] [--request-id UUID]",
+  ],
+  [
+    "channel request",
+    "Collect replies and status for one consultation",
+    "<channel> <request-id> [--limit N] [--offset N]",
   ],
   ["channel show", "Show channel settings and membership", "<channel>"],
   ["channel rename", "Rename a channel", "<channel> <name>"],
@@ -236,6 +249,7 @@ export function registerCli(
   bb: BbPluginApi,
   store: Store,
   handlers: PluginRpcHandlers<typeof rpcContract>,
+  sendMessage: SendMessage,
 ) {
   // Both entry points execute exactly the same validated operations.
   async function call<K extends Method>(
@@ -267,12 +281,13 @@ export function registerCli(
       );
     return matches[0]!;
   }
-  function channel(selector: string) {
+  function channel(selector: string, threadId?: string) {
     const rooms = store.rooms();
     const room =
       rooms.find((r) => r.id === selector) ??
       rooms.find((r) => r.name.toLowerCase() === selector.toLowerCase());
     if (!room) throw new UsageError(`Channel not found: ${selector}`);
+    if (threadId) authorizeChannel(store, threadId, room.id);
     return room;
   }
   async function fileLocation(path: string, args: Args, ctx: PluginCliContext) {
@@ -399,6 +414,27 @@ export function registerCli(
       }
       try {
         ctx.signal?.throwIfAborted();
+        const caller = ctx.threadId
+          ? agentAuthor(store, ctx.threadId)
+          : undefined;
+        function ownBot(selector: string) {
+          const value = bot(selector);
+          if (caller?.botId && caller.botId !== value.id)
+            throw new UsageError(
+              "A bot can only administer its own profile, mission, and memory.",
+            );
+          return value;
+        }
+        function ownJob(id: string) {
+          const job = store.job(id);
+          if (!job || (caller?.botId && caller.botId !== job.botId))
+            throw new UsageError("Work item is not available to this caller.");
+          return job;
+        }
+        if (caller?.botId && command === "create")
+          throw new UsageError(
+            "Use a top-level BB agent to create or administer other bots.",
+          );
         if (command === "list" || command === "channel list") {
           const a = argumentsFor(
             rest,
@@ -415,6 +451,7 @@ export function registerCli(
           const { limit, offset } = a.page(100, 50);
           const allRooms = store
             .rooms()
+            .filter((r) => !caller?.botId || r.memberIds.includes(caller.botId))
             .filter(
               (r) =>
                 command === "list" ||
@@ -468,7 +505,7 @@ export function registerCli(
             [selector] = a.positional(1);
           return emit(
             await call("retire", {
-              id: bot(selector!).id,
+              id: ownBot(selector!).id,
               retired: command === "retire",
             }),
           );
@@ -476,6 +513,7 @@ export function registerCli(
         if (command === "retry") {
           const a = argumentsFor(rest),
             [id] = a.positional(1);
+          ownJob(id!);
           return emit(await call("retryJob", { id }));
         }
         if (command === "channel search") {
@@ -483,7 +521,7 @@ export function registerCli(
             [selector, query] = a.positional(2);
           return emit(
             await call("history", {
-              id: channel(selector!).id,
+              id: channel(selector!, ctx.threadId).id,
               query,
               before: a.text("before"),
               limit: a.page(100, 50).limit,
@@ -503,7 +541,7 @@ export function registerCli(
             if (!Object.keys(patch).length)
               throw new UsageError("Provide at least one profile flag.");
             return emit(
-              await call("update", { id: bot(selector!).id, ...patch }),
+              await call("update", { id: ownBot(selector!).id, ...patch }),
             );
           }
           if (a.has("name"))
@@ -516,7 +554,7 @@ export function registerCli(
               name: selector,
               mission: await textInput(a, ctx, "mission", "mission-file", true),
               roomId: a.has("channel")
-                ? channel(a.required("channel")).id
+                ? channel(a.required("channel"), ctx.threadId).id
                 : undefined,
             }),
           );
@@ -524,7 +562,7 @@ export function registerCli(
         if (["show", "pause", "resume", "wake"].includes(command!)) {
           const a = argumentsFor(rest),
             [selector] = a.positional(1),
-            b = bot(selector!);
+            b = ownBot(selector!);
           return emit(
             command === "show"
               ? b
@@ -537,7 +575,7 @@ export function registerCli(
         if (command === "mission" || command === "memory") {
           const a = argumentsFor(rest, ["text", "file", "version", "machine"]),
             [selector] = a.positional(1);
-          const id = bot(selector!).id,
+          const id = ownBot(selector!).id,
             file = command === "mission" ? "MISSION.md" : "MEMORY.md";
           const text = await textInput(a, ctx);
           const current = await call("document", { id, file });
@@ -560,8 +598,12 @@ export function registerCli(
           a.positional(0);
           const { limit, offset } = a.page();
           const jobs = store.activity(
-            a.has("bot") ? bot(a.required("bot")).id : undefined,
-            a.has("channel") ? channel(a.required("channel")).id : undefined,
+            a.has("bot")
+              ? ownBot(a.required("bot")).id
+              : (caller?.botId ?? undefined),
+            a.has("channel")
+              ? channel(a.required("channel"), ctx.threadId).id
+              : undefined,
             limit,
             offset,
           );
@@ -574,19 +616,24 @@ export function registerCli(
         if (command === "job" || command === "stop") {
           const a = argumentsFor(rest),
             [id] = a.positional(1),
-            job = store.job(id!);
+            job = ownJob(id!);
           if (!job) throw new UsageError("Work item not found.");
           return emit(
             command === "job" ? job : await call("cancelJob", { id }),
           );
         }
         if (command === "channel create") {
-          const a = argumentsFor(rest, [], [], ["bot"]),
+          const a = argumentsFor(rest, ["request-id"], [], ["bot"]),
             [name] = a.positional(0, 1);
           return emit(
             await call("createRoom", {
               name,
-              memberIds: a.many("bot").map((s) => bot(s).id),
+              memberIds: creatorMembers(
+                store,
+                ctx.threadId,
+                a.many("bot").map((s) => bot(s).id),
+              ),
+              requestId: a.text("request-id"),
             }),
           );
         }
@@ -597,7 +644,7 @@ export function registerCli(
         ) {
           const a = argumentsFor(rest),
             [selector, value] = a.positional(2),
-            room = channel(selector!);
+            room = channel(selector!, ctx.threadId);
           return emit(
             command === "channel rename"
               ? await call("updateRoom", { id: room.id, name: value })
@@ -621,7 +668,7 @@ export function registerCli(
         ) {
           const a = argumentsFor(rest),
             [selector] = a.positional(1),
-            room = channel(selector!);
+            room = channel(selector!, ctx.threadId);
           if (command === "channel show") return emit(room);
           if (command === "channel members")
             return emit(room.memberIds.map((id) => store.get(id)));
@@ -639,17 +686,31 @@ export function registerCli(
         if (command === "channel delete") {
           const a = argumentsFor(rest, [], ["yes"]),
             [selector] = a.positional(1),
-            room = channel(selector!);
+            room = channel(selector!, ctx.threadId);
           if (!a.flag("yes"))
             throw new UsageError(
               "Deleting a channel permanently removes its history. Pass --yes to confirm, or use channel archive to preserve it.",
             );
           return emit(await call("deleteRoom", { id: room.id }));
         }
+        if (command === "channel request") {
+          const a = argumentsFor(rest, ["limit", "offset"]),
+            [selector, requestId] = a.positional(2);
+          const { limit, offset } = a.page();
+          return emit(
+            requestStatus(
+              store,
+              channel(selector!, ctx.threadId).id,
+              requestId!,
+              limit,
+              offset,
+            ),
+          );
+        }
         if (command === "channel messages") {
           const a = argumentsFor(rest, ["limit", "offset"]),
             [selector] = a.positional(1),
-            room = channel(selector!);
+            room = channel(selector!, ctx.threadId);
           const { limit, offset } = a.page(),
             messages = store.messages(room.id, limit, offset),
             ids = new Set(messages.map((m) => m.id));
@@ -670,7 +731,7 @@ export function registerCli(
             ["attach", "attachment"],
           );
           const [selector] = a.positional(1),
-            room = channel(selector!);
+            room = channel(selector!, ctx.threadId);
           const text = (await textInput(a, ctx)) ?? "",
             requestId = a.text("request-id") ?? randomUUID();
           z.string().uuid().parse(requestId);
@@ -687,13 +748,16 @@ export function registerCli(
             attachmentIds.push((await attach(room.id, path, a, ctx)).id);
           try {
             return emit(
-              await call("send", {
-                id: room.id,
-                text,
-                requestId,
-                attachmentIds,
-                replyTo: a.text("reply-to"),
-              }),
+              await sendMessage(
+                rpcContract.send.input.parse({
+                  id: room.id,
+                  text,
+                  requestId,
+                  attachmentIds,
+                  replyTo: a.text("reply-to"),
+                }),
+                ctx.threadId,
+              ),
             );
           } catch (e) {
             throw new Error(
@@ -704,19 +768,23 @@ export function registerCli(
         if (command === "channel react") {
           const a = argumentsFor(rest, [], ["remove"]),
             [selector, messageId, emoji] = a.positional(3),
-            id = channel(selector!).id;
-          await call("reaction", {
+            id = channel(selector!, ctx.threadId).id;
+          const input = rpcContract.reaction.input.parse({
             id,
             messageId,
             emoji,
             active: !a.flag("remove"),
           });
+          if (ctx.threadId) {
+            channelReaction(store, ctx.threadId, input);
+            bb.realtime.publish("changed", {});
+          } else await call("reaction", input);
           return emit({ messageId, emoji, active: !a.flag("remove") });
         }
         if (command === "channel attach") {
           const a = argumentsFor(rest, ["machine", "mime-type"]),
             [selector, path] = a.positional(2);
-          const room = channel(selector!);
+          const room = channel(selector!, ctx.threadId);
           if (room.archived)
             throw new UsageError(
               "Restore this channel before attaching a file.",
@@ -730,7 +798,7 @@ export function registerCli(
             command === "channel download" ? ["force"] : [],
           );
           const [selector, attachmentId] = a.positional(2),
-            id = channel(selector!).id;
+            id = channel(selector!, ctx.threadId).id;
           if (command === "channel discard")
             return emit(await call("discardAttachment", { id, attachmentId }));
           const attachment = store.attachment(attachmentId!);

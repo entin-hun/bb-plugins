@@ -146,6 +146,7 @@ export const messageSchema = z.object({
   runId: z.string(),
   botId: idSchema.nullable(),
   speaker: z.string(),
+  sourceThreadId: z.string().optional(),
   replyTo: z.string().nullable().default(null),
   attachments: z.array(attachmentSchema).default([]),
   text: z.string(),
@@ -245,7 +246,10 @@ export const rpcContract = defineRpcContract({
     output: conversationSchema,
   },
   createRoom: {
-    input: roomInput.extend({ name: roomInput.shape.name.optional() }),
+    input: roomInput.extend({
+      name: roomInput.shape.name.optional(),
+      requestId: z.string().uuid().optional(),
+    }),
     output: roomSchema,
   },
   updateRoom: {

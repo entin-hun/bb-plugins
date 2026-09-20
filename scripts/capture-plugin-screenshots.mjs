@@ -391,6 +391,39 @@ const threadUrl = `/projects/${projectId}/threads/${threadId}`;
 
 const captures = [
   {
+    id: "bots-consultation",
+    packageDir: "bb-plugin-bots",
+    fileName: "channel-consultation.png",
+    setup: async (client) => {
+      const { rooms, bots } = await pluginRpc("bots", "list", null);
+      const room = rooms.find(r => r.name === "Council" && !r.archived);
+      if (!room) throw new Error("Migrate the Council advisors and seed their consultation before capturing.");
+      const names = room.memberIds.map(id => bots.find(b => b.id === id)?.name);
+      for (const name of ["Grug", "Architect", "Designer"]) if (!names.includes(name)) throw new Error("Missing migrated advisor: " + name);
+      await client.navigate("/");
+      await client.waitForText("Council");
+      await client.evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('.channels-sidebar button')).find(b => b.textContent.trim() === '#Council');
+        if (!button) throw new Error('Council channel missing from sidebar');
+        button.click();
+      })()`);
+      await client.waitForAriaButton("Rename channel: Council");
+      await client.waitForAriaButton("Channel members: 3 bots");
+      await client.waitForText("Biggest structural risk: a growing avatar stack");
+      await client.evaluate(`(() => {
+        const messages = Array.from(document.querySelectorAll('.bot-room-message'));
+        for (const name of ['BB agent', 'Grug', 'Architect', 'Designer']) {
+          if (!messages.some(m => m.querySelector('strong')?.textContent === name && m.querySelector('p')?.textContent.length > 30)) throw new Error('Missing live response from ' + name);
+        }
+        if (!Array.from(document.querySelectorAll("button")).some(b => b.getAttribute("aria-label") === "View BB agent's work")) throw new Error('Agent attribution needs a work link');
+        const transcript = document.querySelector('[role="log"]');
+        if (transcript) transcript.scrollTop = 0;
+      })()`);
+      await client.clickFirstButtonWithAria("Channel members: 3 bots");
+      await client.waitForText("Add bot");
+    },
+  },
+  {
     id: "bots-profile",
     packageDir: "bb-plugin-bots",
     fileName: "bot-profile.png",
@@ -792,16 +825,6 @@ const captures = [
         buttons: 0,
       });
       await sleep(500);
-    },
-  },
-  {
-    id: "council",
-    packageDir: "bb-plugin-council",
-    setup: async (client) => {
-      await client.navigate("/plugins/council/council");
-      await client.waitForText("Sessions");
-      await client.waitForText("Proposal:");
-      await client.waitForText("completed");
     },
   },
   {

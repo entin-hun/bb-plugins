@@ -64,3 +64,27 @@ QA channels were deleted and QA bots retired after testing.
 
 At a 390 × 844 viewport the channel header, composer, and populated search dialog
 fit without horizontal overflow; the search dialog remains fully visible.
+
+## Council replacement
+
+- Migrated Grug, Architect, and Designer with full original personas and exact
+  provider, model, and reasoning settings. Their schedules remain off. Verified
+  the migration twice: no duplicate bots or channels. The private backup retains
+  all 14 previous sessions, member configuration, and Council settings.
+- All three answered a real, bounded channel-design question through their
+  configured providers. Live QA found that bot spawning did not mark provider
+  selections explicit; fixed it and verified both Pi members and Codex Architect.
+  Dispatch failures now retain their original error instead of hiding the cause.
+- Architect used native tools to discover Quinn, create a new channel, send a brief,
+  read it, and check request status. Quinn replied in that channel. The test channel
+  was archived afterward; the migrated Council channel remains available.
+- Verified agent attribution and work links in the live transcript, compact member
+  stack/menu, all three real advisor responses, and the Council channel in the sidebar.
+- Removed Council from the installed application, package tree, collection manifest,
+  dependency lockfile, and screenshot definitions. Its history backup remains local.
+- Added regression coverage for tool discovery, forged identity rejection, safe send
+  and create retries, channel membership access, creator membership, per-caller
+  reactions, cross-channel limits, bounded mention fan-out, errors/PASS/cancellation,
+  retry status, and bot CLI ownership of private documents and work.
+- Independent read-only review completed with no remaining major findings after
+  the CLI ownership fix. The expanded suite has **75 passing tests**.
