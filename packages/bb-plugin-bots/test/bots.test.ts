@@ -1478,34 +1478,221 @@ test("stale profile saves cannot overwrite a newer edit", async () => {
 test("cancelled dispatch cleanup survives temporarily invisible host threads", async () => {
   const x = setup();
   try {
-    x.runtime.enqueue(x.a, { id: "late-visible", text: "work", conversationKey: "mission", status: "dispatching" });
+    x.runtime.enqueue(x.a, {
+      id: "late-visible",
+      text: "work",
+      conversationKey: "mission",
+      status: "dispatching",
+    });
     await x.runtime.cancel(x.store.job("late-visible")!, "Owner stopped");
     await x.runtime.tick();
     assert.equal(x.store.work(x.a.id)[0]!.cancellationPending, true);
-    x.harness.inspection.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_late" })]);
-    x.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({ botId: x.a.id, conversationKey: "mission:late-visible" }));
+    x.harness.inspection.sdk.stub("threads.list", async () => [
+      makeThreadResponse({ id: "thr_late" }),
+    ]);
+    x.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({
+      botId: x.a.id,
+      conversationKey: "mission:late-visible",
+    }));
     await x.runtime.tick();
     assert.equal(x.store.job("late-visible")!.cancellationPending, false);
     assert.equal(x.harness.inspection.sdk.callsTo("threads.stop").length, 1);
-  } finally { await x.close(); }
+  } finally {
+    await x.close();
+  }
 });
 
 test("membership and archive wait for unresolved dispatch cleanup", async () => {
   for (const operation of ["member", "updateRoom", "channelState"] as const) {
-    const x = setup(); await plugin(x.bb);
+    const x = setup();
+    await plugin(x.bb);
     try {
       x.runtime.send(x.room, "@atlas work", randomUUID());
       const job = x.store.work(x.a.id)[0]!;
       x.store.putJob({ ...job, status: "dispatching" });
-      const input = operation === "member" ? { id: x.room.id, botId: x.a.id, present: false } : operation === "updateRoom" ? { id: x.room.id, name: x.room.name, memberIds: [x.b.id] } : { id: x.room.id, archived: true };
-      await assert.rejects(x.harness.behavior.callRpc(operation, input), /Still locating/);
+      const input =
+        operation === "member"
+          ? { id: x.room.id, botId: x.a.id, present: false }
+          : operation === "updateRoom"
+            ? { id: x.room.id, name: x.room.name, memberIds: [x.b.id] }
+            : { id: x.room.id, archived: true };
+      await assert.rejects(
+        x.harness.behavior.callRpc(operation, input),
+        /Still locating/,
+      );
       assert.ok(x.store.room(x.room.id).memberIds.includes(x.a.id));
       assert.ok(!x.store.room(x.room.id).archived);
-      x.harness.inspection.sdk.stub("threads.list", async () => [makeThreadResponse({ id: "thr_late_cleanup" })]);
-      x.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({ botId: x.a.id, conversationKey: `${job.conversationKey}:${job.id}` }));
+      x.harness.inspection.sdk.stub("threads.list", async () => [
+        makeThreadResponse({ id: "thr_late_cleanup" }),
+      ]);
+      x.harness.inspection.sdk.stub("threads.getPluginMetadata", async () => ({
+        botId: x.a.id,
+        conversationKey: `${job.conversationKey}:${job.id}`,
+      }));
       await x.runtime.tick();
       await x.harness.behavior.callRpc(operation, input);
       assert.equal(x.store.job(job.id)!.cancellationPending, false);
-    } finally { await x.close(); }
+    } finally {
+      await x.close();
+    }
   }
+});
+
+test("history pages use stable cursors while new messages arrive, with old reply parents", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    for (let i = 0; i < 225; i++)
+      x.store.putMessage({
+        id: `message-${i}`,
+        roomId: x.room.id,
+        runId: "fixture",
+        botId: null,
+        speaker: "You",
+        text: i === 0 ? "needle 100%_literal" : `Message ${i}`,
+        replyTo: i === 224 ? "message-0" : null,
+        attachments: [],
+        createdAt: 1,
+      });
+    const data = (await x.harness.behavior.callRpc("room", {
+      id: x.room.id,
+    })) as {
+      messages: { id: string }[];
+      parents: { id: string }[];
+      hasOlder: boolean;
+    };
+    assert.equal(data.messages.length, 200);
+    assert.equal(data.hasOlder, true);
+    assert.equal(data.parents[0]?.id, "message-0");
+    const first = x.store.history(x.room.id, undefined, "", 100);
+    x.store.putMessage({
+      ...x.store.message("message-224")!,
+      id: "new-message",
+    });
+    const second = x.store.history(x.room.id, first.nextBefore!, "", 100);
+    const third = x.store.history(x.room.id, second.nextBefore!, "", 100);
+    assert.equal(
+      new Set(
+        [...first.messages, ...second.messages, ...third.messages].map(
+          (m) => m.id,
+        ),
+      ).size,
+      225,
+    );
+    assert.equal(third.nextBefore, null);
+    assert.equal(
+      x.store.history(x.room.id, undefined, "100%_literal").messages[0]?.id,
+      "message-0",
+    );
+    const other = { ...x.room, id: randomUUID() };
+    x.store.putRoom(other);
+    assert.throws(
+      () => x.store.history(other.id, "message-0"),
+      /cursor not found/,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("retiring stops all work and leaves channels while preserving identity and history", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    x.runtime.send(x.room, "@atlas work", randomUUID());
+    const before = x.store.messages(x.room.id).length;
+    const j = x.store.work(x.a.id)[0]!;
+    x.store.putJob({ ...j, status: "running", threadId: "thr_retiring" });
+    await x.runtime.retire(x.a.id, true);
+    assert.equal(x.store.get(x.a.id).retired, true);
+    assert.equal(x.store.get(x.a.id).home, x.a.home);
+    assert.equal(x.store.work(x.a.id).length, 0);
+    assert.equal(x.store.messages(x.room.id).length, before);
+    assert.ok(!x.store.room(x.room.id).memberIds.includes(x.a.id));
+    assert.throws(() => x.runtime.wake(x.store.get(x.a.id)), /Restore/);
+    await assert.rejects(
+      x.harness.behavior.callRpc("member", {
+        id: x.room.id,
+        botId: x.a.id,
+        present: true,
+      }),
+      /Restore/,
+    );
+    assert.throws(
+      () =>
+        x.runtime.send(x.store.room(x.room.id), "@atlas hello", randomUUID()),
+      /retired/,
+    );
+    await x.runtime.retire(x.a.id, false);
+    assert.equal(x.store.get(x.a.id).paused, true);
+    assert.ok(!x.store.room(x.room.id).memberIds.includes(x.a.id));
+    await x.harness.behavior.callRpc("member", {
+      id: x.room.id,
+      botId: x.a.id,
+      present: true,
+    });
+  } finally {
+    await x.close();
+  }
+});
+
+test("retirement preserves roster and active profile if cleanup is unresolved", async () => {
+  const x = setup();
+  try {
+    x.runtime.send(x.room, "@atlas work", randomUUID());
+    const j = x.store.work(x.a.id)[0]!;
+    x.store.putJob({ ...j, status: "dispatching" });
+    await assert.rejects(x.runtime.retire(x.a.id, true), /Still locating/);
+    assert.ok(!x.store.get(x.a.id).retired);
+    assert.ok(x.store.room(x.room.id).memberIds.includes(x.a.id));
+  } finally {
+    await x.close();
+  }
+});
+
+test("retrying a failed response is idempotent and preserves the original message", async () => {
+  const x = setup();
+  try {
+    x.runtime.send(x.room, "@atlas work", randomUUID());
+    const original = x.store.work(x.a.id)[0]!;
+    x.store.putJob({
+      ...original,
+      status: "error",
+      error: "Provider unavailable",
+    });
+    await x.runtime.driveRoom(x.room);
+    const [a, b] = await Promise.all([
+      x.runtime.retryJob(original.id),
+      x.runtime.retryJob(original.id),
+    ]);
+    assert.equal(a.id, b.id);
+    assert.equal(a.retryOf, original.id);
+    assert.equal(a.status, "queued");
+    assert.equal(x.store.messages(x.room.id).length, 1);
+    assert.equal(x.store.work(x.a.id).length, 1);
+    assert.equal(a.triggerMessageId, original.triggerMessageId);
+    const running = x.store.job(a.id)!;
+    running.status = "error";
+    running.error = "Another failure";
+    x.store.putJob(running);
+    assert.notEqual((await x.runtime.retryJob(a.id)).id, a.id);
+    x.store.putRoom({ ...x.room, archived: true });
+    await assert.rejects(x.runtime.retryJob(original.id), /Restore/);
+  } finally {
+    await x.close();
+  }
+});
+
+test("retry racing with deletion returns a clear unavailable error", async () => {
+  const x = setup();
+  try {
+    x.runtime.send(x.room, "@atlas work", randomUUID());
+    const job = x.store.work(x.a.id)[0]!; x.store.putJob({ ...job, status: "error", error: "Failed" });
+    const entered = deferred<void>(), finish = deferred<void>();
+    const deleting = x.runtime.locked(`room:${x.room.id}`, async () => { entered.resolve(); await finish.promise; x.store.deleteRoom(x.room.id); });
+    await entered.promise;
+    const retry = x.runtime.retryJob(job.id);
+    finish.resolve(); await deleting;
+    await assert.rejects(retry, /no longer available/);
+  } finally { await x.close(); }
 });

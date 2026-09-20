@@ -41,3 +41,26 @@ partial audio; availability follows BB's voice configuration.
 
 The capture script drives the real BB UI with deterministic demo conversations.
 Published images use BB's collapsed sidebar to omit unrelated local project names.
+
+## Completion features
+
+- A separate 215-message channel was seeded through the real CLI. Initial loading
+  showed 200 messages plus Load earlier; search found the first message, selection
+  loaded the missing page and focused it, and an old reply retained its reference.
+- Retirement and restoration worked through both UI and CLI. Retirement removed
+  channel membership; restoration kept mission work paused and required reinviting.
+- A temporary bot using an invalid model produced a real failed response. View work
+  opened its native BB thread. After correcting its model, Retry produced
+  `RECOVERY VERIFIED.` without repeating the owner's message.
+- Added focused tests for stable history cursors, literal search, cross-channel
+  cursor rejection, old reply parents, retirement preservation/cleanup, filtered
+  CLI commands, and idempotent response retry.
+- Independent runtime and UI reviewers found no remaining major issues after fixes.
+
+The completed suite has **67 passing tests**. Final typecheck and build pass.
+The UI attachment input and removal flow, create-from-mention with draft preservation,
+activity dialog, and confirmed channel deletion were also exercised live. Temporary
+QA channels were deleted and QA bots retired after testing.
+
+At a 390 × 844 viewport the channel header, composer, and populated search dialog
+fit without horizontal overflow; the search dialog remains fully visible.

@@ -24,7 +24,23 @@ const profileFlags = [
   "interval",
 ];
 const commands = [
-  ["list", "List bots and channels", "[--limit N] [--offset N]"],
+  [
+    "list",
+    "List bots and channels",
+    "[--retired | --all] [--limit N] [--offset N]",
+  ],
+  [
+    "retire",
+    "Retire a bot, stop its work and leave its channels; keep files and history",
+    "<bot>",
+  ],
+  ["restore", "Restore a retired bot with mission work paused", "<bot>"],
+  ["retry", "Retry one failed or stopped channel response", "<job-id>"],
+  [
+    "channel search",
+    "Search all channel history",
+    "<channel> <query> [--before MESSAGE_ID] [--limit N]",
+  ],
   [
     "create",
     "Create a persistent bot",
@@ -387,11 +403,15 @@ export function registerCli(
           const a = argumentsFor(
             rest,
             ["limit", "offset"],
-            command === "channel list" ? ["archived", "all"] : [],
+            command === "channel list"
+              ? ["archived", "all"]
+              : ["retired", "all"],
           );
           a.positional(0);
-          if (a.flag("all") && a.flag("archived"))
-            throw new UsageError("Choose --all or --archived.");
+          if (a.flag("all") && (a.flag("archived") || a.flag("retired")))
+            throw new UsageError(
+              "Choose --all or a single archive/retirement filter.",
+            );
           const { limit, offset } = a.page(100, 50);
           const allRooms = store
             .rooms()
@@ -401,8 +421,11 @@ export function registerCli(
                 a.flag("all") ||
                 !!r.archived === a.flag("archived"),
             );
+          const filteredBots = store
+            .all()
+            .filter((b) => a.flag("all") || !!b.retired === a.flag("retired"));
           const rooms = allRooms.slice(offset, offset + limit),
-            bots = store.all().slice(offset, offset + limit);
+            bots = filteredBots.slice(offset, offset + limit);
           const data =
             command === "list"
               ? {
@@ -410,7 +433,7 @@ export function registerCli(
                   rooms,
                   offset,
                   nextOffset:
-                    Math.max(store.all().length, allRooms.length) >
+                    Math.max(filteredBots.length, allRooms.length) >
                     offset + limit
                       ? offset + limit
                       : null,
@@ -438,6 +461,33 @@ export function registerCli(
                 ? [`More: --offset ${data.nextOffset}`]
                 : []),
             ].join("\n") || "No results.",
+          );
+        }
+        if (command === "retire" || command === "restore") {
+          const a = argumentsFor(rest),
+            [selector] = a.positional(1);
+          return emit(
+            await call("retire", {
+              id: bot(selector!).id,
+              retired: command === "retire",
+            }),
+          );
+        }
+        if (command === "retry") {
+          const a = argumentsFor(rest),
+            [id] = a.positional(1);
+          return emit(await call("retryJob", { id }));
+        }
+        if (command === "channel search") {
+          const a = argumentsFor(rest, ["limit", "before"]),
+            [selector, query] = a.positional(2);
+          return emit(
+            await call("history", {
+              id: channel(selector!).id,
+              query,
+              before: a.text("before"),
+              limit: a.page(100, 50).limit,
+            }),
           );
         }
         if (command === "create" || command === "update") {

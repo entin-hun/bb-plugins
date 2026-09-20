@@ -136,3 +136,18 @@ Unknown commands, invalid flags, and ambiguous selectors fail with a nonzero
 exit code. JSON errors are written to stderr as `{error}`. These are owner
 administration commands: use them to carry out the user's instructions, not
 as permission to create bots, send messages, or change missions autonomously.
+
+## History, retirement, and recovery
+
+- `bb bots channel search <channel> <query> [--before MESSAGE_ID] [--limit N] --json`
+  searches all retained message text and speaker names. Use `nextBefore` as the
+  next `--before` cursor; it remains stable when new messages arrive.
+- `bb bots retire <bot> --json` stops current work and removes the bot from all
+  channels while retaining its profile, mission, memory, files, and history.
+- `bb bots list --retired --json` finds retired bots. `--all` includes both states.
+- `bb bots restore <bot> --json` restores availability with mission work paused.
+  Invite the bot to its channels again explicitly.
+- `bb bots retry <job-id> --json` retries one failed or stopped channel response.
+  Repeating the command returns the same retry. To retry a failed retry, use its
+  new job ID. Archived channels and retired/nonmember bots must be restored and
+  invited first. Unresolved cancellation must finish before retrying.

@@ -99,7 +99,10 @@ export default async function plugin(bb: BbPluginApi) {
   function validateRoom(name: string, memberIds: string[], id?: string) {
     if (new Set(memberIds).size !== memberIds.length)
       throw new Error("Choose distinct bots for this group.");
-    memberIds.forEach((botId) => store.get(botId));
+    memberIds.forEach((botId) => {
+      if (store.get(botId).retired)
+        throw new Error("Restore this bot before inviting it.");
+    });
     if (
       store
         .rooms()
@@ -113,6 +116,10 @@ export default async function plugin(bb: BbPluginApi) {
       input.roomId
         ? runtime.locked(`room:${input.roomId}`, () => create(input))
         : create(input),
+    retire: ({ id, retired }) => runtime.retire(id, retired),
+    retryJob: ({ id }) => runtime.retryJob(id),
+    history: ({ id, before, query, limit }) =>
+      store.history(id, before, query, limit),
     get: ({ id }) => ({
       bot: store.get(id),
       conversations: store.conversations(id),
@@ -156,6 +163,8 @@ export default async function plugin(bb: BbPluginApi) {
       }),
     pause: ({ id, paused }) =>
       runtime.locked(id, async () => {
+        if (store.get(id).retired && !paused)
+          throw new Error("Restore this bot before resuming its mission.");
         const bot = { ...store.get(id), paused, updatedAt: Date.now() };
         store.put(bot);
         if (paused) {
@@ -233,7 +242,8 @@ export default async function plugin(bb: BbPluginApi) {
           ))
             if (
               removed.includes(job.botId) &&
-              (!["done", "error", "cancelled"].includes(job.status) || job.cancellationPending)
+              (!["done", "error", "cancelled"].includes(job.status) ||
+                job.cancellationPending)
             )
               await runtime.cancel(job, "Bot removed from the group.", true);
           const next = { ...room, name, memberIds, updatedAt: Date.now() };
@@ -246,6 +256,8 @@ export default async function plugin(bb: BbPluginApi) {
     room: ({ id }) => ({
       room: store.room(id),
       messages: store.messages(id),
+      parents: store.parents(store.messages(id)),
+      hasOlder: store.messages(id, 1, 200).length > 0,
       reactions: store.reactions(id),
       runs: store.runs(id).slice(-50),
       jobs: store.roomJobs(id),
@@ -346,6 +358,8 @@ export default async function plugin(bb: BbPluginApi) {
     member: ({ id, botId, present }) =>
       runtime.locked(`room:${id}`, async () => {
         const room = store.room(id);
+        if (present && store.get(botId).retired)
+          throw new Error("Restore this bot before inviting it.");
         store.get(botId);
         if (room.archived)
           throw new Error("Restore this channel before changing members.");
@@ -503,6 +517,11 @@ export default async function plugin(bb: BbPluginApi) {
           }
         : { action: "proceed" };
     const bot = store.get(c.botId);
+    if (bot.retired)
+      return {
+        action: "reject",
+        message: "This bot is retired. Restore it from the Bots page.",
+      };
     if (bot.paused && c.kind !== "group")
       return {
         action: "wait",

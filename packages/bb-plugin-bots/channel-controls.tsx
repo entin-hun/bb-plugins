@@ -151,6 +151,7 @@ export function BotOptions({
 export function matchingBots(bots: Bot[], memberIds: string[], query: string) {
   const q = query.toLowerCase();
   return bots
+    .filter((b) => !b.retired)
     .filter((b) => `${b.name} ${b.handle}`.toLowerCase().includes(q))
     .sort(
       (a, b) =>

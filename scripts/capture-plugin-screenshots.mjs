@@ -592,6 +592,26 @@ const captures = [
     },
   },
   {
+    id: "bots-search",
+    packageDir: "bb-plugin-bots",
+    fileName: "channel-search.png",
+    setup: async (client) => {
+      await captures.find((capture) => capture.id === "bots").setup(client);
+      await client.clickFirstButtonWithAria("Channel members: 2 bots");
+      await client.clickFirstButtonWithAria("Search channel");
+      await client.waitForText("Search the entire channel, including older messages.");
+      await client.evaluate(`document.querySelector('input[aria-label="Search channel history"]').focus()`);
+      await client.command("Input.insertText", { text: "ORBIT-42" });
+      await client.waitForText("2 messages");
+      await client.evaluate(`(() => {
+        const results = Array.from(document.querySelectorAll(".channel-search-result"));
+        if (results.length !== 2 || !results.every(r => r.textContent.includes("ORBIT-42"))) {
+          throw new Error("Channel search must find both staged bot replies");
+        }
+      })()`);
+    },
+  },
+  {
     id: "agent-checklists",
     packageDir: "bb-plugin-agent-checklists",
     setup: async (client) => {

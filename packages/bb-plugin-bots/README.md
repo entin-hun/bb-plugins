@@ -30,6 +30,10 @@ BB’s **Settings → Appearance** can select sidebar providers. **Channels and 
 
 Channels always respond to explicit messages. Separately, a bot’s mission work can be paused from its administration page. New bots created there start with scheduled mission work paused. **Wake now** asks for one bounded step toward the mission. Schedules are off by default and do not replay missed intervals after downtime. Pausing mission work does not disable channel replies.
 
+**Retire bot** stops its current work, removes it from every channel, and keeps its profile, files, and history. Use the collection’s **Retired** filter to find it. **Restore bot** makes it available for invitations again, with scheduled mission work paused.
+
+Failed channel responses show **View work** and **Retry response**. Retrying keeps the original message and targets only that bot; repeated clicks do not start duplicate retries. Restore and invite a removed bot before retrying.
+
 Automatic execution is limited to 30 started turns per bot per hour and times out after 20 minutes. BB’s provider and concurrency limits also apply.
 
 ## Persistence
@@ -45,7 +49,7 @@ Each bot lives at `<BB data directory>/plugins/bots/homes/<bot-id>/`:
 
 Each bot response uses its own hidden BB work thread with recent shared messages as context. **View work** opens native tools, approvals, and failures. Existing group conversations appear as Channels without losing history; old group links redirect to their channel. Existing private work sessions remain stored and accessible through BB, while the Bots page is for configuration.
 
-The transcript currently shows the latest 200 messages; all history remains stored. This is a single-owner local feature. Bots use BB’s configured providers, credentials, tools, and skills on the primary machine. Separate directories provide persistent storage, not separate accounts. Shared `MEMORY.md` should contain only information appropriate for every channel the bot joins.
+Channels initially load 200 messages. **Load earlier messages** pages through the retained transcript. **Search channel** searches all stored message text and names; selecting a result or an older reply reference loads and focuses its message. This is a single-owner local feature. Bots use BB’s configured providers, credentials, tools, and skills on the primary machine. Separate directories provide persistent storage, not separate accounts. Shared `MEMORY.md` should contain only information appropriate for every channel the bot joins.
 
 ## CLI
 
@@ -59,6 +63,11 @@ bb bots create Atlas --mission 'Verify facts and cite sources.' --json
 bb bots channel create 'Launch room' --bot @atlas --json
 bb bots channel send 'Launch room' --text '@atlas Review this brief.' --attach ./brief.pdf --json
 bb bots channel messages 'Launch room' --json
+bb bots channel search 'Launch room' 'decision' --json
+bb bots retire @atlas --json
+bb bots list --retired --json
+bb bots restore @atlas --json
+bb bots retry <job-id> --json
 bb bots activity --channel 'Launch room' --json
 bb bots --help
 ```
@@ -115,3 +124,9 @@ BB_CAPTURE_PROJECT_ID=proj_... \
 BB_CAPTURE_THREAD_ID=thr_... \
 node scripts/capture-plugin-screenshots.mjs
 ```
+
+See [verification notes](docs/QA.md) for test coverage and live walkthrough results.
+
+![Search across channel history in the running BB app](assets/channel-search.png)
+
+The search preview shows both demo bots’ replies to the staged launch brief.

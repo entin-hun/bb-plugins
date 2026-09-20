@@ -5,6 +5,7 @@
   "plugins": [
     { "name": "agent-checklists", "source": "./packages/bb-plugin-agent-checklists" },
     { "name": "agent-plugins", "source": "./packages/bb-plugin-agent-plugins" },
+    { "name": "bots", "source": "./packages/bb-plugin-bots" },
     { "name": "cobalt2", "source": "./packages/bb-plugin-cobalt2" },
     { "name": "comprehension", "source": "./packages/bb-plugin-comprehension" },
     { "name": "copy-session-id", "source": "./packages/bb-plugin-copy-session-id" },
@@ -16,6 +17,7 @@
     { "name": "omp", "source": "./packages/bb-plugin-omp" },
     { "name": "plannotator", "source": "./packages/bb-plugin-plannotator" },
     { "name": "prime-agent", "source": "./packages/bb-plugin-prime-agent" },
+    { "name": "spool", "source": "./packages/bb-plugin-spool" },
     { "name": "tok-speed", "source": "./packages/bb-plugin-tok-speed" },
     { "name": "traces", "source": "./packages/bb-plugin-traces" },
     { "name": "ua-fetch", "source": "./packages/bb-plugin-ua-fetch" }

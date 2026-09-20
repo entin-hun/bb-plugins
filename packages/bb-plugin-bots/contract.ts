@@ -34,6 +34,7 @@ export const botSchema = profileInput.extend({
   home: z.string(),
   projectId: z.string(),
   hostId: z.string(),
+  retired: z.boolean().optional(),
   paused: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -91,6 +92,7 @@ export const jobSchema = z.object({
     "cancelled",
   ]),
   cancellationPending: z.boolean().optional(),
+  retryOf: z.string().optional(),
   reply: z.string().nullable(),
   error: z.string().nullable(),
   createdAt: z.number(),
@@ -188,6 +190,24 @@ export const rpcContract = defineRpcContract({
     }),
     output: botSchema,
   },
+  retire: {
+    input: z.object({ id: idSchema, retired: z.boolean() }),
+    output: botSchema,
+  },
+  retryJob: { input: z.object({ id: z.string() }), output: jobSchema },
+  history: {
+    input: z.object({
+      id: z.string().uuid(),
+      before: z.string().optional(),
+      query: z.string().trim().max(500).optional(),
+      limit: z.number().int().min(1).max(100).default(50),
+    }),
+    output: z.object({
+      messages: z.array(messageSchema),
+      parents: z.array(messageSchema),
+      nextBefore: z.string().nullable(),
+    }),
+  },
   get: {
     input: z.object({ id: idSchema }),
     output: z.object({
@@ -244,6 +264,8 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       room: roomSchema,
       messages: z.array(messageSchema),
+      parents: z.array(messageSchema),
+      hasOlder: z.boolean(),
       reactions: z.array(reactionSchema),
       runs: z.array(runSchema),
       jobs: z.array(jobSchema),

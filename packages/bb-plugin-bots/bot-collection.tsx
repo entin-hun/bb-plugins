@@ -28,6 +28,7 @@ export function BotCollection({
   const [sort, setSort] = useState("name");
   const [filterOpen, setFilterOpen] = useState(false);
   const [sortOpen, setSortOpen] = useState(false);
+  const activeCount = bots.filter((b) => !b.retired).length;
   const search = query.trim().toLowerCase();
   const visible = bots
     .filter(
@@ -35,7 +36,11 @@ export function BotCollection({
         `${b.name} @${b.handle} ${b.description}`
           .toLowerCase()
           .includes(search) &&
-        (status === "all" || (status === "attention" ? !!b.error : !b.error)),
+        (status === "retired"
+          ? !!b.retired
+          : !b.retired &&
+            (status === "all" ||
+              (status === "attention" ? !!b.error : !b.error))),
     )
     .sort((a, b) =>
       sort === "recent"
@@ -50,9 +55,9 @@ export function BotCollection({
         </p>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1 text-sm font-medium">
-            All bots{" "}
+            {status === "retired" ? "Retired bots" : "All bots"}{" "}
             <span className="text-2xs text-subtle-foreground">
-              {bots.length}
+              {status === "retired" ? bots.length - activeCount : activeCount}
             </span>
           </span>
           <Button
@@ -88,6 +93,7 @@ export function BotCollection({
                   ["all", "All bots"],
                   ["ready", "Ready"],
                   ["attention", "Needs attention"],
+                  ["retired", "Retired"],
                 ].map(([value, label]) => (
                   <button
                     key={value}
@@ -157,17 +163,21 @@ export function BotCollection({
             role="status"
           >
             <p className="text-sm text-muted-foreground">
-              No bots match your search or filters.
+              {!activeCount && status !== "retired" && !query
+                ? "No active bots. Your retired bots and their files are preserved."
+                : "No bots match your search or filters."}
             </p>
             <Button
               variant="link"
               size="sm"
               onClick={() => {
                 setQuery("");
-                setStatus("all");
+                setStatus(!activeCount ? "retired" : "all");
               }}
             >
-              Clear filters
+              {!activeCount && status !== "retired"
+                ? "View retired bots"
+                : "Clear filters"}
             </Button>
           </div>
         ) : (
@@ -183,7 +193,11 @@ export function BotCollection({
                   <span
                     className={`text-xs ${bot.error ? "text-destructive" : "text-muted-foreground"}`}
                   >
-                    {bot.error ? "Needs attention" : "Ready"}
+                    {bot.retired
+                      ? "Retired"
+                      : bot.error
+                        ? "Needs attention"
+                        : "Ready"}
                   </span>
                 }
                 onOpen={() =>

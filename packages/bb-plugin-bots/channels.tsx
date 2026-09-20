@@ -28,6 +28,7 @@ import {
 } from "./components/ui/context-menu";
 import { ProfileForm, WorkList, ErrorMessage, message } from "./bot-ui";
 import { channelWork } from "./channel-work";
+import { ChannelSearch } from "./channel-search";
 import { GroupComposer } from "./composer";
 import { Menu, Modal, InvitePicker, ReactionPicker } from "./channel-controls";
 
@@ -41,29 +42,47 @@ function useRoster() {
     rooms: [],
   });
   const [error, setError] = useState<string | null>(null);
+  const request = useRef(0);
   const load = useCallback(() => {
+    const seq = ++request.current;
     rpc.call("list").then(
       (d) => {
-        setData(d);
-        setError(null);
+        if (seq === request.current) {
+          setData(d);
+          setError(null);
+        }
       },
-      (e) => setError(message(e)),
+      (e) => {
+        if (seq === request.current) setError(message(e));
+      },
     );
   }, [rpc]);
-  useEffect(load, [load]);
+  useEffect(() => {
+    load();
+    return () => {
+      request.current++;
+    };
+  }, [load]);
   useRealtime("changed", load);
   return { ...data, error, load };
 }
 type ChannelData = {
   room: Room;
   messages: RoomMessage[];
+  parents: RoomMessage[];
+  hasOlder: boolean;
   reactions: Reaction[];
   jobs: Job[];
   runs: RoomRun[];
 };
+const mergeMessages = (first: RoomMessage[], next: RoomMessage[]) => [
+  ...new Map([...first, ...next].map((m) => [m.id, m])).values(),
+];
 function useChannel(id: string | null) {
   const rpc = useRpc<typeof rpcContract>(),
     request = useRef(0);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const olderRequest = useRef(false);
   const [data, setData] = useState<ChannelData | null>(null),
     [error, setError] = useState<string | null>(null);
   const load = useCallback(() => {
@@ -75,7 +94,20 @@ function useChannel(id: string | null) {
     rpc.call("room", { id }).then(
       (d) => {
         if (seq === request.current) {
-          setData(d);
+          setData((prev) =>
+            prev?.room.id === d.room.id
+              ? {
+                  ...d,
+                  messages: mergeMessages(prev.messages, d.messages),
+                  parents: mergeMessages(prev.parents, d.parents),
+                  hasOlder:
+                    prev.messages.length &&
+                    prev.messages[0]?.id !== d.messages[0]?.id
+                      ? prev.hasOlder
+                      : d.hasOlder,
+                }
+              : d,
+          );
           setError(null);
         }
       },
@@ -96,7 +128,38 @@ function useChannel(id: string | null) {
     };
   }, [load]);
   useRealtime("changed", load);
-  return { data: data?.room.id === id ? data : null, error, load };
+  const loadOlder = useCallback(async () => {
+    if (!id || !data?.hasOlder || olderRequest.current) return;
+    olderRequest.current = true;
+    setLoadingOlder(true);
+    try {
+      const page = await rpc.call("history", {
+        id,
+        before: data.messages[0]?.id,
+        limit: 100,
+      });
+      setData((prev) =>
+        prev?.room.id === id
+          ? {
+              ...prev,
+              messages: mergeMessages(page.messages, prev.messages),
+              parents: mergeMessages(page.parents, prev.parents),
+              hasOlder: !!page.nextBefore,
+            }
+          : prev,
+      );
+    } finally {
+      olderRequest.current = false;
+      setLoadingOlder(false);
+    }
+  }, [id, data, rpc]);
+  return {
+    data: data?.room.id === id ? data : null,
+    error,
+    load,
+    loadOlder,
+    loadingOlder,
+  };
 }
 export function ChannelRedirect({ subPath }: { subPath?: string }) {
   const navigate = useBbNavigate();
@@ -491,6 +554,7 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
     { bots } = useRoster();
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
+  const [searchOpen, setSearchOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false),
     [inviteOpen, setInviteOpen] = useState(false),
     [createOpen, setCreateOpen] = useState(false),
@@ -646,6 +710,19 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
         </button>
         <ErrorMessage error={failure} />
       </Menu>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label="Search channel"
+        onClick={() => setSearchOpen(true)}
+      >
+        <Icon name="Search" />
+      </Button>
+      <ChannelSearch
+        id={room.id}
+        open={searchOpen}
+        onOpenChange={setSearchOpen}
+      />
       <Menu
         label="Channel options"
         trigger={
@@ -820,7 +897,7 @@ export function ChannelsPage({ subPath }: PluginNavPanelProps) {
   return id ? <ChannelChat key={id} id={id} /> : <CreateChannel />;
 }
 function ChannelChat({ id }: { id: string }) {
-  const { data, error, load } = useChannel(id),
+  const { data, error, load, loadOlder, loadingOlder } = useChannel(id),
     { bots } = useRoster(),
     rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
@@ -833,13 +910,45 @@ function ChannelChat({ id }: { id: string }) {
     [createOpen, setCreateOpen] = useState(false),
     [failure, setFailure] = useState<string | null>(null),
     [copied, setCopied] = useState<string | null>(null);
+  const [jumpTarget, setJumpTarget] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
   const transcript = useRef<HTMLDivElement>(null),
     atBottom = useRef(true),
     marked = useRef(0);
   useEffect(() => {
+    const onJump = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ roomId: string; messageId: string }>
+      ).detail;
+      if (detail.roomId === id) {
+        atBottom.current = false;
+        setJumpTarget(detail.messageId);
+      }
+    };
+    window.addEventListener("bb:bots:jump", onJump);
+    return () => window.removeEventListener("bb:bots:jump", onJump);
+  }, [id]);
+  useEffect(() => {
+    if (!jumpTarget || !data || loadingOlder) return;
+    const el = document.getElementById(`channel-message-${jumpTarget}`);
+    if (el) {
+      el.scrollIntoView({ block: "center" });
+      el.focus();
+      setJumpTarget(null);
+    } else if (data.hasOlder)
+      void loadOlder().catch((e) => {
+        setFailure(message(e));
+        setJumpTarget(null);
+      });
+    else {
+      setFailure("This message is no longer available.");
+      setJumpTarget(null);
+    }
+  }, [jumpTarget, data, loadOlder, loadingOlder]);
+  useEffect(() => {
     const el = transcript.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [data?.messages.length]);
+    if (el && atBottom.current && !jumpTarget) el.scrollTop = el.scrollHeight;
+  }, [data?.messages.length, jumpTarget]);
   useEffect(() => {
     if (!data || marked.current >= data.room.updatedAt) return;
     marked.current = data.room.updatedAt;
@@ -911,9 +1020,8 @@ function ChannelChat({ id }: { id: string }) {
     }
   };
   const jump = (messageId: string) => {
-    const el = document.getElementById(`channel-message-${messageId}`);
-    el?.scrollIntoView({ block: "center" });
-    el?.focus();
+    atBottom.current = false;
+    setJumpTarget(messageId);
   };
   const working = channelWork(jobs);
   return (
@@ -936,6 +1044,39 @@ function ChannelChat({ id }: { id: string }) {
               el.scrollHeight - el.scrollTop - el.clientHeight < 100;
         }}
       >
+        {data.hasOlder && (
+          <div className="flex justify-center py-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={loadingOlder}
+              onClick={async () => {
+                atBottom.current = false;
+                const anchor = messages[0]?.id;
+                try {
+                  await loadOlder();
+                  requestAnimationFrame(() => {
+                    if (anchor)
+                      document
+                        .getElementById(`channel-message-${anchor}`)
+                        ?.scrollIntoView({ block: "start" });
+                  });
+                } catch (e) {
+                  setFailure(message(e));
+                }
+              }}
+            >
+              {loadingOlder
+                ? "Loading earlier messages…"
+                : "Load earlier messages"}
+            </Button>
+          </div>
+        )}
+        {jumpTarget && (
+          <p role="status" className="text-xs text-muted-foreground">
+            Finding message…
+          </p>
+        )}
         {!messages.length && (
           <div className="channel-empty">
             <span className="channel-hash" aria-hidden>
@@ -958,7 +1099,8 @@ function ChannelChat({ id }: { id: string }) {
             m.createdAt - previous.createdAt < 5 * 60000 &&
             !m.replyTo;
           const parent = m.replyTo
-              ? messages.find((x) => x.id === m.replyTo)
+              ? (messages.find((x) => x.id === m.replyTo) ??
+                data.parents.find((x) => x.id === m.replyTo))
               : null,
             job = jobs.find((j) => j.id === m.id);
           const grouped = [
@@ -1107,6 +1249,59 @@ function ChannelChat({ id }: { id: string }) {
             </div>
           );
         })}
+        {jobs
+          .filter(
+            (j) =>
+              j.status === "error" && !jobs.some((r) => r.retryOf === j.id),
+          )
+          .slice(0, 5)
+          .map((j) => (
+            <div key={j.id} className="channel-response-error" role="status">
+              <strong>
+                {bots.find((b) => b.id === j.botId)?.name ?? "Bot"} couldn’t
+                finish
+              </strong>
+              <span>{j.error}</span>
+              {(!room.memberIds.includes(j.botId) ||
+                !bots.some((b) => b.id === j.botId && !b.retired)) && (
+                <span>Restore and invite this bot to retry.</span>
+              )}
+              <div className="flex gap-2">
+                {j.threadId && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => navigate.toThread(j.threadId!)}
+                  >
+                    View work
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={
+                    !!retrying ||
+                    !!room.archived ||
+                    !room.memberIds.includes(j.botId) ||
+                    !bots.some((b) => b.id === j.botId && !b.retired)
+                  }
+                  onClick={async () => {
+                    setRetrying(j.id);
+                    try {
+                      await rpc.call("retryJob", { id: j.id });
+                      load();
+                    } catch (e) {
+                      setFailure(message(e));
+                    } finally {
+                      setRetrying(null);
+                    }
+                  }}
+                >
+                  Retry response
+                </Button>
+              </div>
+            </div>
+          ))}
         {working.map((current) => {
           const b = bots.find((b) => b.id === current.botId);
           if (!b) return null;

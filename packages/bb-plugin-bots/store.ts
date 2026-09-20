@@ -176,6 +176,42 @@ export class Store {
         .all(roomId, limit, offset) as { json: string }[]
     ).map((r) => messageSchema.parse(JSON.parse(r.json)));
   }
+  parents(messages: RoomMessage[]) {
+    return [
+      ...new Set(messages.flatMap((m) => (m.replyTo ? [m.replyTo] : []))),
+    ].flatMap((id) => {
+      const m = this.message(id);
+      return m ? [m] : [];
+    });
+  }
+  history(roomId: string, before?: string, query = "", limit = 50) {
+    this.room(roomId);
+    let cursor = Number.MAX_SAFE_INTEGER;
+    if (before) {
+      const row = this.db
+        .prepare("SELECT rowid FROM room_messages WHERE id=? AND room_id=?")
+        .get(before, roomId) as { rowid: number } | undefined;
+      if (!row) throw new Error("Message cursor not found in this channel.");
+      cursor = row.rowid;
+    }
+    const rows = (
+      this.db
+        .prepare(
+          `SELECT json FROM room_messages WHERE room_id=? AND rowid<?
+      AND (?='' OR instr(lower(json_extract(json,'$.text')),lower(?))>0 OR instr(lower(json_extract(json,'$.speaker')),lower(?))>0)
+      ORDER BY rowid DESC LIMIT ?`,
+        )
+        .all(roomId, cursor, query, query, query, limit + 1) as {
+        json: string;
+      }[]
+    ).map((r) => messageSchema.parse(JSON.parse(r.json)));
+    const messages = rows.slice(0, limit).reverse();
+    return {
+      messages,
+      parents: this.parents(messages),
+      nextBefore: rows.length > limit ? messages[0]!.id : null,
+    };
+  }
   message(id: string): RoomMessage | null {
     const row = this.db
       .prepare("SELECT json FROM room_messages WHERE id=?")

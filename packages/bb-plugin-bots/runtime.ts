@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type {
   Attachment,
@@ -65,6 +65,7 @@ export class Runtime {
     prompt?: string,
     attachments: Attachment[] = [],
   ): Promise<Conversation> {
+    if (bot.retired) throw new Error("Restore this bot before starting work.");
     const existing = this.store
       .conversations(bot.id)
       .find((c) => c.key === key);
@@ -143,6 +144,7 @@ export class Runtime {
     });
   }
   wake(bot: Bot) {
+    if (bot.retired) throw new Error("Restore this bot before waking it.");
     if (bot.paused) throw new Error("Resume this bot before waking it.");
     if (this.store.work(bot.id).some((j) => j.conversationKey === "mission"))
       return false;
@@ -184,9 +186,13 @@ export class Runtime {
       throw new Error("Reply message not found in this group.");
     // Only owner messages may invite new bots. This is committed with the message,
     // so editing a draft or retrying a lost response cannot change membership.
+    if (
+      this.store.all().some((bot) => bot.retired && mentioned(text, bot.handle))
+    )
+      throw new Error("Restore the retired bot before mentioning it.");
     const invited = this.store
       .all()
-      .filter((bot) => mentioned(text, bot.handle));
+      .filter((bot) => !bot.retired && mentioned(text, bot.handle));
     room = {
       ...room,
       memberIds: [...new Set([...room.memberIds, ...invited.map((b) => b.id)])],
@@ -243,6 +249,7 @@ export class Runtime {
   ) {
     if (!room.memberIds.includes(botId)) return;
     const bot = this.store.get(botId);
+    if (bot.retired) return;
     // Deterministic delivery identity makes recovery and repeated collection idempotent.
     const id = `${trigger.id}:${botId}`;
     if (
@@ -363,7 +370,9 @@ export class Runtime {
         this.busy.delete(job.botId);
     }
     if (requireStopped && this.store.job(job.id)?.cancellationPending)
-      throw new Error("Still locating a cancelled response. Try again after automatic cleanup finishes.");
+      throw new Error(
+        "Still locating a cancelled response. Try again after automatic cleanup finishes.",
+      );
     this.changed();
   }
   async stopRoom(room: Room) {
@@ -388,6 +397,109 @@ export class Runtime {
       }
     this.changed();
     return next;
+  }
+  async retire(id: string, retired: boolean): Promise<Bot> {
+    return this.locked("rooms", async () => {
+      const roomIds = this.store
+        .rooms()
+        .map((r) => r.id)
+        .sort();
+      const lockRooms = async (i: number): Promise<Bot> => {
+        if (i < roomIds.length)
+          return this.locked(`room:${roomIds[i]}`, () => lockRooms(i + 1));
+        return this.locked(id, async () => {
+          const bot = this.store.get(id);
+          if (!!bot.retired === retired) return bot;
+          if (retired) {
+            for (const job of this.store.work(id))
+              await this.cancel(job, "Bot retired by the owner.", true);
+            for (const c of this.store
+              .conversations(id)
+              .filter((c) => c.kind === "admin")) {
+              try {
+                for (const q of await this.bb.sdk.threads.queuedMessages.list({
+                  threadId: c.threadId,
+                }))
+                  await this.bb.sdk.threads.queuedMessages.delete({
+                    threadId: c.threadId,
+                    queuedMessageId: q.id,
+                  });
+                await this.bb.sdk.threads.stop({ threadId: c.threadId });
+              } catch (cause) {
+                if (!missingThread(cause)) throw cause;
+              }
+            }
+          }
+          const next = {
+            ...bot,
+            retired,
+            paused: true,
+            updatedAt: Math.max(Date.now(), bot.updatedAt + 1),
+          };
+          this.store.db.transaction(() => {
+            this.store.put(next);
+            if (retired)
+              for (const room of this.store.rooms())
+                if (room.memberIds.includes(id))
+                  this.store.putRoom({
+                    ...room,
+                    memberIds: room.memberIds.filter((b) => b !== id),
+                    updatedAt: Date.now(),
+                  });
+          })();
+          this.busy.delete(id);
+          this.changed();
+          return next;
+        });
+      };
+      return lockRooms(0);
+    });
+  }
+  async retryJob(id: string): Promise<Job> {
+    const original = this.store.job(id);
+    if (!original?.roomId)
+      throw new Error("Only channel responses can be retried.");
+    return this.locked(`room:${original.roomId}`, async () => {
+      const job = this.store.job(id);
+      if (!job?.roomId)
+        throw new Error("This response is no longer available.");
+      const room = this.store.room(job.roomId);
+      if (room.archived)
+        throw new Error("Restore this channel before retrying.");
+      const bot = this.store.get(job.botId);
+      if (bot.retired || !room.memberIds.includes(bot.id))
+        throw new Error("Invite this bot before retrying.");
+      if (
+        !["error", "cancelled"].includes(job.status) ||
+        job.cancellationPending
+      )
+        throw new Error("Wait for this response to stop before retrying.");
+      const retryId = `retry:${createHash("sha256").update(id).digest("hex").slice(0, 32)}`;
+      const existing = this.store.job(retryId);
+      if (existing) return existing;
+      const run = this.store.runs(room.id).find((r) => r.id === job.runId);
+      if (!run) throw new Error("The original discussion was not found.");
+      this.store.db.transaction(() => {
+        this.enqueue(bot, {
+          id: retryId,
+          retryOf: id,
+          text: job.text,
+          conversationKey: job.conversationKey,
+          roomId: room.id,
+          runId: run.id,
+          triggerMessageId: job.triggerMessageId,
+          depth: job.depth,
+          attachments: job.attachments,
+        });
+        this.store.putRun({
+          ...run,
+          status: "running",
+          pendingJobIds: [...run.pendingJobIds, retryId],
+        });
+      })();
+      this.changed();
+      return this.store.job(retryId)!;
+    });
   }
   async deleteRoom(id: string): Promise<boolean> {
     return this.locked(`room:${id}`, async () => {
@@ -709,6 +821,7 @@ export class Runtime {
         try {
           await this.reconcileBusy(bot);
           if (
+            !bot.retired &&
             !bot.paused &&
             bot.intervalMinutes &&
             Date.now() - bot.lastWakeAt >= bot.intervalMinutes * 60000

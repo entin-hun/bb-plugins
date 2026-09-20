@@ -642,3 +642,68 @@ test("CLI help, invalid flags, bounds, and aborted calls do not mutate state", a
     await x.close();
   }
 });
+
+test("CLI retirement, restoration, and searching retained channel history", async () => {
+  const x = await setup();
+  try {
+    const b = await x.create("History bot");
+    const room = roomSchema.parse(await x.ok(["channel", "create", "History"]));
+    for (let i = 0; i < 4; i++)
+      await x.ok([
+        "channel",
+        "send",
+        room.id,
+        "--text",
+        `Searchable fixture ${i}`,
+      ]);
+    const page = (await x.ok([
+      "channel",
+      "search",
+      room.id,
+      "fixture",
+      "--limit",
+      "2",
+    ])) as { messages: unknown[]; nextBefore: string };
+    assert.equal(page.messages.length, 2);
+    assert.ok(page.nextBefore);
+    const next = (await x.ok([
+      "channel",
+      "search",
+      room.id,
+      "fixture",
+      "--before",
+      page.nextBefore,
+    ])) as { messages: unknown[]; nextBefore: null };
+    assert.equal(next.messages.length, 2);
+    assert.equal(next.nextBefore, null);
+    await x.ok(["retire", b.id]);
+    assert.equal(
+      ((await x.ok(["list"])) as { bots: unknown[] }).bots.length,
+      0,
+    );
+    assert.equal(
+      ((await x.ok(["list", "--retired"])) as { bots: unknown[] }).bots.length,
+      1,
+    );
+    await x.ok(["restore", b.id]);
+    assert.equal(
+      ((await x.ok(["list"])) as { bots: unknown[] }).bots.length,
+      1,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("filtered bot list pagination counts only visible bots", async () => {
+  const x = await setup();
+  try {
+    const b = await x.create("Visible");
+    for (let i = 0; i < 60; i++) x.store.put({ ...b, id: `bot_${i.toString(16).padStart(16, "0")}`, handle: `retired-${i}`, retired: true });
+    const active = await x.ok(["list"]) as {bots: unknown[]; nextOffset: number | null};
+    assert.equal(active.bots.length, 1); assert.equal(active.nextOffset, null);
+    const retired = await x.ok(["list", "--retired"]) as {bots:unknown[]; nextOffset:number};
+    assert.equal(retired.bots.length, 50); assert.equal(retired.nextOffset, 50);
+    assert.equal((await x.run(["list", "--retired", "--all"])).exitCode, 2);
+  } finally { await x.close(); }
+});
