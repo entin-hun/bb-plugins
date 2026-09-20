@@ -1,5 +1,14 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import {
+  channelAutomationCreate,
+  channelAutomationList,
+  channelAutomationUpdate,
+  channelAutomationAction,
+  channelAutomationView,
+  channelAutomationRuns,
+  channelAutomationRunPage,
+} from "./automation-contract";
 export const idSchema = z.string().regex(/^bot_[a-f0-9]{16}$/);
 export const profileInput = z.object({
   name: z.string().trim().min(1).max(80),
@@ -79,6 +88,7 @@ export const attachmentSchema = z.object({
 });
 export type Attachment = z.infer<typeof attachmentSchema>;
 export const jobSchema = z.object({
+  automationId: z.string().optional(),
   id: z.string(),
   botId: idSchema,
   conversationKey: z.string(),
@@ -145,6 +155,7 @@ export const roomSchema = z.object({
 });
 export type Room = z.infer<typeof roomSchema>;
 export const messageSchema = z.object({
+  automationId: z.string().optional(),
   id: z.string(),
   roomId: z.string(),
   runId: z.string(),
@@ -181,6 +192,29 @@ const roomInput = z.object({
   memberIds: z.array(idSchema).max(16),
 });
 export const rpcContract = defineRpcContract({
+  automationRuns: {
+    input: channelAutomationRuns,
+    output: channelAutomationRunPage,
+  },
+  automationCreate: {
+    input: channelAutomationCreate,
+    output: channelAutomationView,
+  },
+  automationList: {
+    input: channelAutomationList,
+    output: z.object({
+      automations: z.array(channelAutomationView),
+      nextOffset: z.number().nullable(),
+    }),
+  },
+  automationUpdate: {
+    input: channelAutomationUpdate,
+    output: channelAutomationView,
+  },
+  automationAction: {
+    input: channelAutomationAction,
+    output: z.object({ ok: z.literal(true), result: z.unknown() }),
+  },
   list: {
     input: z.null(),
     output: z.object({ bots: z.array(botSchema), rooms: z.array(roomSchema) }),

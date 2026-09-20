@@ -1,11 +1,55 @@
 # Bots and Channels verification
 
+## Channel automations — 2026-09-20
+
+Verified against the running BB app and its installed Automations plugin in
+`Channel automations QA` with a temporary `Schedule QA` bot.
+
+- The real bot used native tools to create and list a paused weekday schedule.
+  Both channel and bot identity were inferred from its active response.
+- A manual run dispatched through the existing Automations scheduler and posted
+  `Scheduled channel verified: ORBIT-42.` under the bot's identity.
+- An enabled one-shot timer fired without a manual run and posted
+  `One-shot channel timer verified.` The schedule disabled itself afterward.
+- The real channel menu/dialog exercised Resume, Pause, Run now, Delete/Cancel,
+  and confirmed Delete. A UI-triggered run posted `CLI schedule verified.`
+- Archive rejected a manual channel run; restore and plugin reload retained
+  schedules and history. Test schedules were paused after verification.
+- Live capture found that manual dispatches have a status without `lastRunAt`.
+  The dialog now displays that status without requiring a scheduled-run timestamp.
+  The capture asserts the real saved task, bot, timezone, state, and dispatch result.
+- Nine regression tests cover inferred identity, membership/ownership,
+  idempotent create and delivery, current context, overlapping work, one-shot CLI
+  input, inactive targets, recursive schedules, retry provenance, and a run that
+  expires while waiting for the channel lock, plus bounded run history.
+- Read-only review caught lost automation provenance on retry and stale dispatch
+  authorization after waiting for a lock. Both fixes passed regression tests and
+  rereview. The full Bots suite has 101 passing tests, including concurrent channel
+  title work, hostile-message isolation, restart-worker reuse, stale-worker selection,
+  and the manual-rename race. Typecheck and build pass.
+
+Screenshot: [Channel automations](../assets/channel-automations.png).
+Capture with `BB_CAPTURE_ONLY=bots-automations`; restore the QA channel if archived.
+`BB_CAPTURE_QA_ACTIONS=1` additionally exercises UI actions against a seeded paused
+`CLI daily check` schedule and verifies the dialog at 390 × 844. It deletes that
+disposable schedule after requesting a manual run.
+`BB_CAPTURE_QA_LAYOUT=1` checks responsive layout without rerunning actions;
+`BB_CAPTURE_QA_HISTORY=1` verifies the saved manual dispatch inside the dialog.
+Live QA caught an unsupported cross-plugin navigation link; Run history now uses
+the Automations RPC and displays bounded, paginated history within the channel.
+
 Verified in the running BB application on 2026-09-20 using isolated QA Echo,
 QA Review, and a QA channel. Existing owner bots and channels were preserved.
 
 ## Baseline
 
 - New channel opens directly into an empty, focused composer.
+- The first message in a blank channel is sent to a hidden, short title task;
+  its result updates the sidebar and header without adding a second chat message.
+  The task receives the first message as untrusted JSON data and has no Bots
+  tools. A manual rename wins if it happens before the title task finishes, and
+  startup recovery retries a title if BB restarts and reuses an in-flight hidden
+  worker instead of spawning a duplicate.
 - Header rename updates the sidebar and channel; membership uses stacked avatars,
   a member menu, and Add bot at the bottom.
 - Mention search lists existing bots and Create new bot; sending a mention invites

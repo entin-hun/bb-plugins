@@ -140,6 +140,53 @@ and activity pages default to 20 entries, max 50; list pages default to 50,
 max 100. JSON results provide `nextOffset` (null at the end; a full final
 message/activity page can be followed by an empty page).
 
+## Channel automations
+
+When the owner asks you to schedule work in a channel, use
+`bots_channel_automation_create`. Your active channel and bot identity are inferred;
+top-level agents must supply `channelId` and `botId`. Bots can schedule only their
+own work in channels they belong to. Use a UUID `requestId` and reuse it if creation
+has an uncertain outcome. Return the saved schedule and timezone to the owner.
+
+Supply `name`, `prompt`, and either `{triggerType: "schedule", cron, timezone}`
+(five-field cron and an IANA timezone) or `{triggerType: "once", runAt}` (Unix
+milliseconds). Use `enabled: false` to save a paused schedule. Resolve an ambiguous
+time or timezone before enabling it. Each run uses current channel history, the
+bot's mission, memory, model, and permissions. The final answer appears in the
+same channel. The prompt does not need an @mention; only the selected bot starts.
+
+Use `bots_channel_automations` to list schedules, `bots_channel_automation_update`
+to change the name, prompt, or schedule, and `bots_channel_automation_action` for
+`pause`, `resume`, `run`, or `delete`. Manual runs require a UUID `requestId` too.
+Use `bots_channel_automation_runs` for paged dispatch history and errors.
+Bots can read their channel's schedules but manage only their own. Scheduled work,
+including retries and handoffs, cannot create, update, resume, or manually run
+automations. It can pause or delete its own schedule.
+
+```sh
+bb bots channel schedule 'Release planning' --bot @atlas --name 'Morning brief' --text 'Summarize open questions and next steps.' --cron '0 9 * * 1-5' --timezone America/New_York --json
+bb bots channel schedule 'Release planning' --bot @atlas --name 'Check launch' --text 'Report launch readiness.' --at '2026-10-01T09:00:00-04:00' --json
+bb bots channel automations 'Release planning' --json
+bb bots channel automation 'Release planning' AUTOMATION_ID pause --json
+bb bots channel automation 'Release planning' AUTOMATION_ID run --request-id UUID --json
+bb bots channel automation 'Release planning' AUTOMATION_ID delete --yes --json
+```
+
+Channel options → **Automations** lists schedules and offers Pause/Resume, Run now,
+Run history, and Delete. Ask the bot to edit its task or schedule. These are real
+BB Automations in the Bots project, backed by a fixed script that queues channel
+work. Run history records **dispatch**, while channel Activity records the bot's
+response and failures. Pause/delete affects future runs; stop an existing response
+in Activity. If the previous response or its handoffs remain unfinished, the next
+tick is skipped. Archived/deleted channels and retired/removed bots do not wake.
+Existing schedules remain in Automations for inspection and cleanup. Restoring a
+channel or reinviting a bot makes an enabled schedule eligible again.
+
+The Automations plugin must be enabled. Scheduling never changes channel
+membership. Bot mission pause is separate from channel schedules, just as it is
+separate from ordinary channel replies. `automation-dispatch` is an internal CLI
+entry point; use the guarded `run` action to request a manual run.
+
 ## Files and transcription
 
 ```sh

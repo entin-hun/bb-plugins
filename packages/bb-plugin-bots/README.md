@@ -4,7 +4,7 @@ Persistent bots with their own files, mission, and memory, and Slack-style chann
 
 ## Use
 
-1. Choose **New channel** in the sidebar to open an empty conversation with the composer ready. It starts with just you. Click its name at the left of the header to rename it.
+1. Choose **New channel** in the sidebar to open an empty conversation with the composer ready. It starts with just you. After the first message, an agent privately suggests a short channel title; click its name at the left of the header to rename it at any time.
 2. Type `@` to find a bot. Sending a mention invites that bot into the channel. The picker also includes **Create new bot…**, which preserves your draft while you choose a name, mission, model, and permissions.
 3. Click the overlapping avatars in the header to see members and their activity. **Add bot** sits at the bottom; member options let you configure or remove a bot.
 4. Open **Bots** to administer profiles, `MISSION.md`, `MEMORY.md`, and activity. The collection uses BB's standard content width, search toolbar, status filter, sorting, and bordered rows. Conversations live in Channels.
@@ -37,6 +37,31 @@ PNG, JPEG, GIF, and WebP images appear as composer previews and inline in sent m
 The Channels section supports unread indicators and filtering. Right-click a channel for **Rename**, **Archive**, or **Delete**; archived channels offer **Restore** and **Delete**. Keyboard users can open this menu with Shift+F10. The channel menu in the header also contains activity, rename, pin, archive, and delete actions. Archiving cancels unfinished work and preserves history; restoring makes the channel available again. Deletion requires confirmation, stops unfinished responses, and permanently removes channel messages, reactions, membership, activity, and draft uploads. Bot profiles, workspaces, and other channels are kept. Existing BB work threads and sent files in BB's project storage remain under BB's own retention. Removing a bot cancels its pending channel work and preserves its messages and reactions. Channels support up to 16 bots.
 
 BB’s **Settings → Appearance** can select sidebar providers. **Channels and threads** preserves BB’s normal thread list below Channels; **Channels navigation** adds New channel alongside New thread.
+
+## Channel automations
+
+Ask a bot: “Every weekday at 9am New York time, summarize the open questions in
+this channel.” The bot can create a recurring schedule or a one-time reminder
+for itself. Each run reads the latest channel context, mission, and memory, and
+posts its answer in the same channel using its current model and permissions.
+
+Open **Channel options → Automations** to review tasks, pause/resume schedules,
+run them now, view run history, or delete them. Ask the bot to change a task or
+schedule. Native tools infer the active bot and channel; top-level agents supply
+both IDs. Bots can manage only their own schedules in channels they belong to.
+
+The existing **Automations** plugin must be enabled. It stores these schedules
+in the Bots project and runs a fixed dispatcher script. Automation history
+records whether the request was dispatched; **Channel activity** records the
+bot's response, errors, and retries. Pausing or deleting a schedule affects
+future runs. Stop an existing response in Activity.
+
+A tick is skipped while that automation's previous response or handoffs remain
+unfinished. Archived/deleted channels and retired/removed bots do not wake;
+their schedules remain available in Automations for inspection or cleanup.
+Scheduled responses and retries cannot create or restart more scheduled work.
+The [Bots skill](skills/bots/SKILL.md#channel-automations) documents the tools
+and CLI commands.
 
 ## Mission work
 
@@ -170,6 +195,12 @@ bb plugin install ./packages/bb-plugin-bots --yes
 Rebuild and run `bb plugin reload bots` after changes. Inspect state with `bb bots list --json`.
 
 ## Staged preview
+
+The channel Automations dialog shows a bot-created weekday brief and a one-time
+QA task, their saved schedules, and the real replies posted by scheduled work.
+Both schedules are paused after verification.
+
+![Channel automations and their replies](assets/channel-automations.png)
 
 The Bots collection in the running BB application, with Atlas, Quinn, Relay, and Scribe, using BB's standard collection layout and search controls.
 

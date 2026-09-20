@@ -391,6 +391,109 @@ const threadUrl = `/projects/${projectId}/threads/${threadId}`;
 
 const captures = [
   {
+    id: "bots-automations",
+    packageDir: "bb-plugin-bots",
+    fileName: "channel-automations.png",
+    setup: async (client) => {
+      const { rooms } = await pluginRpc("bots", "list", null);
+      const room = rooms.find(r => r.name === "Channel automations QA" && !r.archived);
+      if (!room) throw new Error("Seed or restore Channel automations QA before capturing.");
+      const { automations } = await pluginRpc("bots", "automationList", { channelId: room.id });
+      const brief = automations.find(a => a.name === "Weekday channel brief");
+      if (!brief || brief.enabled || brief.trigger.timezone !== "America/New_York")
+        throw new Error("Seed the paused Weekday channel brief with its New York timezone.");
+      const data = await pluginRpc("bots", "room", { id: room.id });
+      if (!data.messages.some(m => m.botId && m.text === "Scheduled channel verified: ORBIT-42."))
+        throw new Error("The scheduled bot response must be visible in the live channel.");
+      await client.navigate("/");
+      await client.waitForText("Channel automations QA");
+      await client.evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('.channels-sidebar button'))
+          .find(b => b.textContent.includes('Channel automations QA'));
+        if (!button) throw new Error('Missing staged channel in the live sidebar');
+        button.click();
+      })()`);
+      await client.waitForText("Scheduled channel verified: ORBIT-42.");
+      const openAutomations = async () => {
+        await client.clickFirstButtonWithAria("Channel options");
+        await client.evaluate(`(() => {
+          const button = Array.from(document.querySelectorAll('.channel-popover button'))
+            .find(b => b.textContent.trim() === 'Automations');
+          if (!button) throw new Error('Channel Automations menu item is missing');
+          button.click();
+        })()`);
+        await client.waitForText("Channel automations");
+        await client.waitForText("Task details");
+        await client.waitForText("America/New_York");
+      };
+      await openAutomations();
+      if (process.env.BB_CAPTURE_QA_ACTIONS === "1") {
+        const rowAction = async (label) => {
+          await client.evaluate(`(() => {
+            const row = Array.from(document.querySelectorAll('.channel-automation'))
+              .find(e => e.textContent.includes('CLI daily check'));
+            const button = row && Array.from(row.querySelectorAll('button'))
+              .find(b => b.textContent.trim() === ${JSON.stringify(label)});
+            if (!button || button.disabled) throw new Error('Missing enabled automation action');
+            button.click();
+          })()`);
+        };
+        await rowAction("Resume");
+        await client.waitForText("Automation resumed.");
+        await rowAction("Pause");
+        await client.waitForText("Paused. Any response already in progress continues.");
+        await rowAction("Run now");
+        await client.waitForText("Run requested.");
+        await rowAction("Delete");
+        await client.waitForText("Confirm delete");
+        await rowAction("Cancel");
+        await rowAction("Delete");
+        await rowAction("Confirm delete");
+        await client.waitForText("Automation deleted.");
+        const live = await pluginRpc("bots", "automationList", { channelId: room.id });
+        if (live.automations.some(a => a.name === 'CLI daily check')) throw new Error('Confirmed delete must remove the schedule');
+      }
+      if (process.env.BB_CAPTURE_QA_ACTIONS === "1" || process.env.BB_CAPTURE_QA_LAYOUT === "1") {
+        await client.command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+        await sleep(900); // BB remounts the channel header at its mobile breakpoint.
+        if (!await client.evaluate("!!document.querySelector('.channel-automation-list')")) await openAutomations();
+        await client.evaluate(`(() => {
+          const dialog = document.querySelector('[role="dialog"]');
+          const rect = dialog.getBoundingClientRect();
+          if (rect.left < 0 || rect.right > innerWidth || rect.top < 0 || rect.bottom > innerHeight || dialog.scrollWidth > dialog.clientWidth)
+            throw new Error('Channel automations must fit on a narrow screen');
+        })()`);
+        await client.command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await sleep(900);
+        if (!await client.evaluate("!!document.querySelector('.channel-automation-list')")) await openAutomations();
+      }
+      await client.evaluate(`(() => {
+        const row = Array.from(document.querySelectorAll('.channel-automation'))
+          .find(e => e.textContent.includes('Weekday channel brief'));
+        if (!row || !row.textContent.includes('Paused') || !row.textContent.includes('Schedule QA'))
+          throw new Error('Missing automation identity and paused state: ' + (row?.textContent ?? document.body.innerText.slice(-1500)));
+        row.querySelector('summary').click();
+      })()`);
+      await client.waitForText("Last dispatch:");
+      if (process.env.BB_CAPTURE_QA_HISTORY === "1") {
+        await client.evaluate(`(() => {
+          const row = Array.from(document.querySelectorAll('.channel-automation'))
+            .find(e => e.textContent.includes('Weekday channel brief'));
+          const button = row && Array.from(row.querySelectorAll('button'))
+            .find(b => b.textContent.trim() === 'Run history');
+          if (!button) throw new Error('Missing Run history action');
+          button.click();
+        })()`);
+        await client.waitForText("Dispatch history");
+        await client.evaluate(`(() => {
+          const history = document.querySelector('[aria-label="Run history for Weekday channel brief"]');
+          if (!history || !history.textContent.includes('Manual') || !history.textContent.includes('succeeded'))
+            throw new Error('The real manual dispatch must appear in channel run history');
+        })()`);
+      }
+    },
+  },
+  {
     id: "bots-images",
     packageDir: "bb-plugin-bots",
     fileName: "channel-images.png",

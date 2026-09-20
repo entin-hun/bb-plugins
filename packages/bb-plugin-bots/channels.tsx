@@ -36,6 +36,7 @@ import {
 import { ProfileForm, WorkList, ErrorMessage, message } from "./bot-ui";
 import { channelWork } from "./channel-work";
 import { ChannelSearch } from "./channel-search";
+import { ChannelAutomationsView } from "./channel-automations-view";
 import { ChannelAttachments } from "./channel-attachments";
 import { GroupComposer } from "./composer";
 import { ChannelModePicker } from "./channel-mode-picker";
@@ -616,6 +617,8 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [automationsOpen, setAutomationsOpen] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false),
     [inviteOpen, setInviteOpen] = useState(false),
     [createOpen, setCreateOpen] = useState(false),
@@ -629,6 +632,8 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
     setInviteOpen(false);
     setCreateOpen(false);
     setActivityOpen(false);
+    setAutomationsOpen(false);
+    setOptionsOpen(false);
     setDeleteOpen(false);
     setSettingsOpen(false);
     setFailure(null);
@@ -786,12 +791,23 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
       />
       <Menu
         label="Channel options"
+        open={optionsOpen}
+        onOpenChange={setOptionsOpen}
         trigger={
           <Button variant="ghost" size="icon" aria-label="Channel options">
             <Icon name="MoreHorizontal" />
           </Button>
         }
       >
+        <button
+          className="channel-menu-row"
+          onClick={() => {
+            setOptionsOpen(false);
+            setAutomationsOpen(true);
+          }}
+        >
+          <Icon name="Calendar" /> Automations
+        </button>
         <button
           className="channel-menu-row"
           onClick={() => setActivityOpen(true)}
@@ -843,6 +859,12 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
         </button>
         <ErrorMessage error={failure} />
       </Menu>
+      <ChannelAutomationsView
+        id={room.id}
+        bots={bots}
+        open={automationsOpen}
+        onOpenChange={setAutomationsOpen}
+      />
       <Modal title="Add a bot" open={inviteOpen} onOpenChange={setInviteOpen}>
         <InvitePicker
           bots={bots}

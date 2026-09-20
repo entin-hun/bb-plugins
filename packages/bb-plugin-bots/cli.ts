@@ -10,6 +10,12 @@ import {
 import { z } from "zod";
 import { rpcContract, type ProfileInput } from "./contract";
 import type { Store } from "./store";
+import type { ChannelAutomations } from "./channel-automations";
+import {
+  channelAutomationCreate,
+  channelAutomationList,
+  channelAutomationAction,
+} from "./automation-contract";
 import {
   channelReaction,
   requestStatus,
@@ -32,6 +38,26 @@ const profileFlags = [
   "interval",
 ];
 const commands = [
+  [
+    "channel automations",
+    "List scheduled work in this channel",
+    "<channel> [--limit N] [--offset N]",
+  ],
+  [
+    "channel schedule",
+    "Schedule a bot's work in this channel",
+    "<channel> --name NAME --text TEXT [--bot BOT] (--cron EXPR --timezone ZONE | --at ISO_TIME) [--request-id UUID] [--paused]",
+  ],
+  [
+    "channel automation",
+    "Manage scheduled channel work",
+    "<channel> <automation-id> <pause|resume|run|delete> [--request-id UUID] [--yes]",
+  ],
+  [
+    "automation-dispatch",
+    "Internal entry point for the automation runner",
+    "--project ID --automation ID --run ID",
+  ],
   [
     "channel behavior",
     "Read or set who responds; also remembers the default for new channels",
@@ -270,6 +296,7 @@ export function registerCli(
     path: string,
     alt?: string,
   ) => Promise<unknown>,
+  automations?: ChannelAutomations,
 ) {
   // Both entry points execute exactly the same validated operations.
   async function call<K extends Method>(
@@ -434,6 +461,21 @@ export function registerCli(
       }
       try {
         ctx.signal?.throwIfAborted();
+        if (command === "automation-dispatch") {
+          const a = argumentsFor(rest, ["project", "automation", "run"]);
+          a.positional(0);
+          if (!automations)
+            throw new UsageError("Channel automations are unavailable.");
+          return emit(
+            await automations.dispatch(
+              a.required("project"),
+              a.required("automation"),
+              a.required("run"),
+              ctx.threadId,
+              ctx.signal,
+            ),
+          );
+        }
         const caller = ctx.threadId
           ? agentAuthor(store, ctx.threadId)
           : undefined;
@@ -450,6 +492,99 @@ export function registerCli(
           if (!job || (caller?.botId && caller.botId !== job.botId))
             throw new UsageError("Work item is not available to this caller.");
           return job;
+        }
+        if (
+          [
+            "channel automations",
+            "channel schedule",
+            "channel automation",
+          ].includes(command!)
+        ) {
+          if (!automations)
+            throw new UsageError("Channel automations are unavailable.");
+          if (command === "channel automations") {
+            const a = argumentsFor(rest, ["limit", "offset"]);
+            const [selector] = a.positional(1);
+            return emit(
+              await automations.list(
+                channelAutomationList.parse({
+                  channelId: channel(selector!, ctx.threadId).id,
+                  ...(a.has("limit") ? { limit: Number(a.text("limit")) } : {}),
+                  ...(a.has("offset")
+                    ? { offset: Number(a.text("offset")) }
+                    : {}),
+                }),
+                ctx.threadId,
+              ),
+            );
+          }
+          if (command === "channel schedule") {
+            const a = argumentsFor(
+              rest,
+              [
+                "name",
+                "text",
+                "file",
+                "machine",
+                "bot",
+                "cron",
+                "timezone",
+                "at",
+                "request-id",
+              ],
+              ["paused"],
+            );
+            const [selector] = a.positional(1);
+            if (
+              a.has("at") === a.has("cron") ||
+              (a.has("at") && a.has("timezone"))
+            )
+              throw new UsageError(
+                "Choose --cron with --timezone, or --at with an ISO timestamp and UTC offset.",
+              );
+            const at = a.text("at");
+            if (at && !/(Z|[+-]\d{2}:\d{2})$/i.test(at))
+              throw new UsageError(
+                "--at needs an ISO timestamp with a UTC offset.",
+              );
+            return emit(
+              await automations.create(
+                channelAutomationCreate.parse({
+                  channelId: channel(selector!, ctx.threadId).id,
+                  ...(a.has("bot") ? { botId: bot(a.required("bot")).id } : {}),
+                  name: a.required("name"),
+                  prompt: await textInput(a, ctx, "text", "file", true),
+                  trigger: at
+                    ? { triggerType: "once", runAt: Date.parse(at) }
+                    : {
+                        triggerType: "schedule",
+                        cron: a.required("cron"),
+                        timezone: a.required("timezone"),
+                      },
+                  requestId: a.text("request-id") ?? randomUUID(),
+                  enabled: !a.has("paused"),
+                }),
+                ctx.threadId,
+              ),
+            );
+          }
+          const a = argumentsFor(rest, ["request-id"], ["yes"]);
+          const [selector, automationId, action] = a.positional(3);
+          if (action === "delete" && !a.has("yes"))
+            throw new UsageError("Deleting an automation requires --yes.");
+          return emit(
+            await automations.action(
+              channelAutomationAction.parse({
+                channelId: channel(selector!, ctx.threadId).id,
+                automationId,
+                action,
+                requestId:
+                  a.text("request-id") ??
+                  (action === "run" ? randomUUID() : undefined),
+              }),
+              ctx.threadId,
+            ),
+          );
         }
         if (command === "publish-image") {
           const a = argumentsFor(rest, ["alt"]);

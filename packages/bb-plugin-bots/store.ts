@@ -184,6 +184,14 @@ export class Store {
         .all(roomId, limit, offset) as { json: string }[]
     ).map((r) => messageSchema.parse(JSON.parse(r.json)));
   }
+  firstMessage(roomId: string): RoomMessage | null {
+    const row = this.db
+      .prepare(
+        "SELECT json FROM room_messages WHERE room_id=? ORDER BY rowid ASC LIMIT 1",
+      )
+      .get(roomId) as { json: string } | undefined;
+    return row ? messageSchema.parse(JSON.parse(row.json)) : null;
+  }
   parents(messages: RoomMessage[]) {
     return [
       ...new Set(messages.flatMap((m) => (m.replyTo ? [m.replyTo] : []))),

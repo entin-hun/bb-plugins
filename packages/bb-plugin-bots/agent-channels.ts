@@ -46,6 +46,7 @@ export function agentAuthor(
     speaker: bot.name,
     sourceThreadId: threadId,
     depth: job?.roomId ? job.depth + 1 : 0,
+    ...(job?.automationId ? { automationId: job.automationId } : {}),
   };
 }
 
