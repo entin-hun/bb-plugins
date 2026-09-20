@@ -141,7 +141,7 @@ function MessageActionButtons({
     </>
   );
 }
-function useChannel(id: string | null) {
+function useChannel(id: string | null, poll = true) {
   const rpc = useRpc<typeof rpcContract>(),
     request = useRef(0);
   const realtimeConnectionState = useRealtimeConnectionState();
@@ -150,13 +150,13 @@ function useChannel(id: string | null) {
   const olderRequest = useRef(false);
   const [data, setData] = useState<ChannelData | null>(null),
     [error, setError] = useState<string | null>(null);
-  const load = useCallback(() => {
-    const seq = ++request.current;
+  const load = useCallback((): Promise<void> => {
     if (!id) {
       setData(null);
-      return;
+      return Promise.resolve();
     }
-    rpc.call("room", { id }).then(
+    const seq = ++request.current;
+    const promise = rpc.call("room", { id }).then(
       (d) => {
         if (seq === request.current) {
           setData((prev) =>
@@ -184,6 +184,7 @@ function useChannel(id: string | null) {
         }
       },
     );
+    return promise;
   }, [rpc, id]);
   useEffect(() => {
     setData(null);
@@ -226,6 +227,41 @@ function useChannel(id: string | null) {
       document.removeEventListener("visibilitychange", refreshOnVisibility);
     };
   }, [load]);
+  // Realtime notifications are deliberately ephemeral. A suspended mobile
+  // WebView can miss the idle notification that settles a bot response, so
+  // keep reconciling the open channel while it is visible. Poll more often
+  // during active work and back off once the channel is quiet.
+  const hasActiveWork =
+    !!data &&
+    (data.jobs.some((job) =>
+      ["queued", "dispatching", "running"].includes(job.status),
+    ) ||
+      data.runs.some((run) => ["queued", "running"].includes(run.status)));
+  useEffect(() => {
+    if (!poll || !id) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      if (disposed) return;
+      const hidden =
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden";
+      if (hidden) {
+        timer = setTimeout(refresh, 30_000);
+        return;
+      }
+      const schedule = () => {
+        if (!disposed)
+          timer = setTimeout(refresh, hasActiveWork ? 2_500 : 15_000);
+      };
+      void load().then(schedule, schedule);
+    };
+    timer = setTimeout(refresh, hasActiveWork ? 2_500 : 15_000);
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasActiveWork, id, load, poll]);
   const loadOlder = useCallback(async () => {
     if (!id || !data?.hasOlder || olderRequest.current) return;
     olderRequest.current = true;
@@ -648,7 +684,7 @@ function NewBot({
 }
 export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
   const id = channelId(subPath),
-    { data, error, load } = useChannel(id),
+    { data, error, load } = useChannel(id, false),
     { bots } = useRoster();
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
