@@ -9,6 +9,7 @@ import * as Popover from "@radix-ui/react-popover";
 import {
   useBbNavigate,
   useRealtime,
+  useRealtimeConnectionState,
   useRpc,
   Markdown,
   experimental_Icon as Icon,
@@ -143,6 +144,8 @@ function MessageActionButtons({
 function useChannel(id: string | null) {
   const rpc = useRpc<typeof rpcContract>(),
     request = useRef(0);
+  const realtimeConnectionState = useRealtimeConnectionState();
+  const previousRealtimeConnectionState = useRef(realtimeConnectionState);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const olderRequest = useRef(false);
   const [data, setData] = useState<ChannelData | null>(null),
@@ -190,6 +193,39 @@ function useChannel(id: string | null) {
     };
   }, [load]);
   useRealtime("changed", load);
+  useEffect(() => {
+    const previous = previousRealtimeConnectionState.current;
+    previousRealtimeConnectionState.current = realtimeConnectionState;
+    if (realtimeConnectionState !== "connected" || previous === "connected")
+      return;
+    // Realtime signals are intentionally ephemeral. Reconcile the room after
+    // a connection becomes usable, including reconnects that pass through
+    // `connecting`.
+    load();
+  }, [load, realtimeConnectionState]);
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      )
+        return;
+      load();
+    };
+    const refreshOnVisibility = () => {
+      if (document.visibilityState === "visible") refreshWhenVisible();
+    };
+    window.addEventListener("pageshow", refreshWhenVisible);
+    window.addEventListener("focus", refreshWhenVisible);
+    window.addEventListener("online", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshOnVisibility);
+    return () => {
+      window.removeEventListener("pageshow", refreshWhenVisible);
+      window.removeEventListener("focus", refreshWhenVisible);
+      window.removeEventListener("online", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshOnVisibility);
+    };
+  }, [load]);
   const loadOlder = useCallback(async () => {
     if (!id || !data?.hasOlder || olderRequest.current) return;
     olderRequest.current = true;
