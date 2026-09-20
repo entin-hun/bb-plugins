@@ -984,6 +984,9 @@
   width: 24px;
   height: 24px;
 }
+.channel-member-remove {
+  color: var(--destructive);
+}
 .channel-bot-name {
   display: flex;
   flex-direction: column;
@@ -1248,7 +1251,9 @@
   }
   .channel-header > button,
   .channel-title,
-  .channel-menu-row {
+  .channel-menu-row,
+  .channel-member-row > button.channel-member-remove {
+    min-width: 36px;
     min-height: 36px;
   }
   .bot-message-actions {

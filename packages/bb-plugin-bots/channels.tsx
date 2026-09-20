@@ -648,7 +648,7 @@ function NewBot({
 }
 export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
   const id = channelId(subPath),
-    { data, error } = useChannel(id),
+    { data, error, load } = useChannel(id),
     { bots } = useRoster();
   const rpc = useRpc<typeof rpcContract>(),
     navigate = useBbNavigate();
@@ -682,12 +682,22 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
     setFailure(null);
     try {
       await fn();
+      load();
     } catch (e) {
       setFailure(message(e));
     } finally {
       setPending(false);
     }
   };
+  const removeBot = (botId: string) =>
+    void act(async () => {
+      await rpc.call("member", {
+        id: room.id,
+        botId,
+        present: false,
+      });
+      setMembersOpen(false);
+    });
   return (
     <div className="channel-header">
       <div className="channel-heading">
@@ -754,6 +764,16 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
                 />{" "}
                 {stateFor(b, data)}
               </small>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="channel-member-remove text-destructive"
+                aria-label={`Remove ${b.name} from channel`}
+                disabled={pending || !!room.archived}
+                onClick={() => removeBot(b.id)}
+              >
+                <Icon name="X" />
+              </Button>
               <Menu
                 label={`${b.name} options`}
                 trigger={
@@ -780,15 +800,7 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
                 <button
                   className="channel-menu-row"
                   disabled={pending || !!room.archived}
-                  onClick={() =>
-                    void act(() =>
-                      rpc.call("member", {
-                        id: room.id,
-                        botId: b.id,
-                        present: false,
-                      }),
-                    )
-                  }
+                  onClick={() => removeBot(b.id)}
                 >
                   Remove from channel
                 </button>
