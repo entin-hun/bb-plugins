@@ -553,6 +553,10 @@
 .group-compose {
   overflow: hidden;
 }
+.group-compose-footer {
+  margin-top: 4px;
+  padding-inline: 14px;
+}
 .group-compose textarea {
   display: block;
   width: 100%;
@@ -1448,4 +1452,15 @@
   width: 14px;
   height: 14px;
   flex-shrink: 0;
+}
+.channel-mode-menu {
+  max-height: var(--radix-dropdown-menu-content-available-height);
+}
+.channel-mode-menu .channel-menu-row[data-highlighted] {
+  background: var(--state-hover);
+  outline: none;
+}
+.channel-mode-menu .channel-menu-row[data-disabled] {
+  pointer-events: none;
+  opacity: 0.5;
 }

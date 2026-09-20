@@ -14,7 +14,7 @@ and native controls. Mission and memory editors are resizable, start at a bounde
 height, and show unsaved/saved state. Reloading with unsaved edits asks before
 discarding them. Profile, mission, memory, and new-bot drafts survive navigation and reloads on the same device. Profile and document saves reject stale versions instead of overwriting newer edits. Interrupted host cancellation stays visible and retries automatically.
 
-The channel menu has three **Response behavior** choices:
+The **Chat mode** selector beneath the message box has three choices:
 
 - **Smart** chooses the smallest relevant set of bots for an unaddressed message, including none for acknowledgments and finished conversations. New channels start here.
 - **Directed** only calls bots you mention or reply to.
@@ -207,8 +207,8 @@ and the compact membership menu. Their original model and reasoning choices are 
 
 ![Council advisors consulting through a BB channel](assets/channel-consultation.png)
 
-The image workflow and response menu below were captured in the running app after a user pasted an image and a real bot published the same local preview through its tool.
+The image workflow and chat mode selector below were captured in the running app after a user pasted an image and a real bot published the same local preview through its tool.
 
 ![Inline owner and bot images in a BB channel](assets/channel-images.png)
 
-![Channel response behavior menu](assets/channel-behavior.png)
+![Chat mode selector beneath the composer](assets/channel-behavior.png)

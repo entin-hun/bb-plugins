@@ -430,11 +430,14 @@ const captures = [
     fileName: "channel-behavior.png",
     setup: async (client) => {
       await captures.find(c => c.id === "bots-images").setup(client);
-      await client.clickFirstButtonWithAria("Channel options");
-      for (const text of ["Response behavior", "Choose relevant bots", "Only mentions and replies", "All bots can respond"]) await client.waitForText(text);
+      await client.clickAriaButtonWithPointer("Chat mode: Smart");
+      for (const text of ["Choose relevant bots", "Only mentions and replies", "All bots can respond"]) await client.waitForText(text);
       await client.evaluate(`(() => {
-        const buttons = Array.from(document.querySelectorAll('[aria-label="Channel options"] button'));
-        if (!buttons.some(b => b.textContent.startsWith('Smart') && b.getAttribute('aria-pressed') === 'true')) throw new Error('Smart selection missing');
+        const items = Array.from(document.querySelectorAll('[aria-label="Chat mode"] [role="menuitemradio"]'));
+        if (!items.some(b => b.textContent.startsWith('Smart') && b.getAttribute('aria-checked') === 'true')) throw new Error('Smart selection missing');
+        const trigger = document.querySelector('[aria-label="Chat mode: Smart"]');
+        const box = document.querySelector('.group-compose');
+        if (!trigger || !box || trigger.getBoundingClientRect().top < box.getBoundingClientRect().bottom) throw new Error('Chat mode must be beneath the composer');
       })()`);
     },
   },

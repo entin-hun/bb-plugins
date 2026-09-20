@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useId } from "react";
+import { useEffect, useRef, useState, useId, type ReactNode } from "react";
 import { experimental_Icon as Icon, useRpc } from "@get-bb/plugin-sdk/app";
 import type { Bot, RoomMessage, rpcContract } from "./contract";
 import { Button } from "./components/ui/button";
@@ -35,7 +35,9 @@ export function GroupComposer({
   bots,
   memberIds,
   onCreateBot,
+  footer,
 }: {
+  footer?: ReactNode;
   autoFocus?: boolean;
   bots: Bot[];
   memberIds: string[];
@@ -532,6 +534,7 @@ export function GroupComposer({
           </Button>
         </div>
       </div>
+      {footer && <div className="group-compose-footer">{footer}</div>}
     </div>
   );
 }

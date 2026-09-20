@@ -120,6 +120,6 @@ preserved.
   along with full workspace typecheck, test suites, and build.
 
 Live screenshots: [inline images](../assets/channel-images.png) and
-[response behavior](../assets/channel-behavior.png). Restore the archived QA channel
+[chat mode beneath the composer](../assets/channel-behavior.png). Restore the archived QA channel
 before rerunning `BB_CAPTURE_ONLY=bots-images,bots-behavior` captures. Its bot is
 retired after verification, with workspace and history preserved.

@@ -31,6 +31,7 @@ import { channelWork } from "./channel-work";
 import { ChannelSearch } from "./channel-search";
 import { ChannelAttachments } from "./channel-attachments";
 import { GroupComposer } from "./composer";
+import { ChannelModePicker } from "./channel-mode-picker";
 import { Menu, Modal, InvitePicker, ReactionPicker } from "./channel-controls";
 
 const uuid = /^[a-f0-9-]{36}$/;
@@ -732,40 +733,6 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
           </Button>
         }
       >
-        <div className="channel-menu-label">Response behavior</div>
-        {(
-          [
-            ["smart", "Smart", "Choose relevant bots"],
-            ["directed", "Directed", "Only mentions and replies"],
-            ["everyone", "Everyone", "All bots can respond"],
-          ] as const
-        ).map(([value, label, hint]) => (
-          <button
-            key={value}
-            className="channel-menu-row"
-            aria-pressed={(room.responseBehavior ?? "everyone") === value}
-            disabled={pending}
-            onClick={() =>
-              void act(() =>
-                rpc.call("channelState", {
-                  id: room.id,
-                  responseBehavior: value,
-                  rememberDefault: true,
-                }),
-              )
-            }
-          >
-            <span className="channel-mode-mark" aria-hidden>
-              {(room.responseBehavior ?? "everyone") === value && (
-                <Icon name="Check" />
-              )}
-            </span>
-            <span className="channel-bot-name">
-              {label}
-              <small>{hint}</small>
-            </span>
-          </button>
-        ))}
         <button
           className="channel-menu-row"
           onClick={() => setActivityOpen(true)}
@@ -1424,6 +1391,7 @@ function ChannelChat({ id }: { id: string }) {
         paused={!!room.archived}
         bots={bots}
         memberIds={room.memberIds}
+        footer={<ChannelModePicker room={room} onChanged={load} />}
         onCreateBot={() => setCreateOpen(true)}
         reply={reply}
         onClearReply={() => setReply(null)}
