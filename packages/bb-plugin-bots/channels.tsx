@@ -1565,8 +1565,9 @@ function ChannelChat({ id }: { id: string }) {
                   <i />
                 </span>
                 <Button
-                  variant="ghost"
-                  size="icon"
+                  variant="destructive"
+                  size="sm"
+                  className="channel-stop-button"
                   aria-label={`Stop ${b.name}'s response`}
                   disabled={!current}
                   onClick={() => {
@@ -1577,6 +1578,7 @@ function ChannelChat({ id }: { id: string }) {
                   }}
                 >
                   <Icon name="Square" />
+                  <span>Stop</span>
                 </Button>
               </div>
             </div>
