@@ -4,11 +4,15 @@ Plugins for [bb](https://github.com/patleeman/bb).
 
 ## Packages
 
+- [`bb-plugin-bots`](packages/bb-plugin-bots/) — persistent agents with their
+  own workspaces, mission and memory files, profiles, and sidebar channels.
 - [`bb-plugin-agent-checklists`](packages/bb-plugin-agent-checklists/) — attach
   persisted structured checklists to threads, update them with agent tools,
   and continue incomplete work automatically.
 - [`bb-plugin-agent-plugins`](packages/bb-plugin-agent-plugins/) — install Agent
   Plugins once in BB and flow their skills and approved MCP tools to providers.
+- [`bb-plugin-spool`](packages/bb-plugin-spool/) — connect BB agents to Spool's
+  read-only, audited context MCP and bundled usage skill.
 - [`bb-plugin-gtd-sidebar`](packages/bb-plugin-gtd-sidebar/) — replace the thread
   list with a GTD-style inbox organized by workflow state.
 - [`bb-plugin-plannotator`](packages/bb-plugin-plannotator/) — embed the upstream

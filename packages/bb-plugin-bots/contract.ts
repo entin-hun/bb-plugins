@@ -1,0 +1,322 @@
+import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+export const idSchema = z.string().regex(/^bot_[a-f0-9]{16}$/);
+export const profileInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  description: z.string().max(500).default(""),
+  avatar: z.string().max(16).default("🤖"),
+  providerId: z.string().max(100).default("codex"),
+  model: z.string().max(200).default(""),
+  reasoningLevel: z
+    .enum([
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+      "ultracode",
+    ])
+    .default("medium"),
+  permissionMode: z.enum(["accept-edits", "auto", "full"]).default("auto"),
+  intervalMinutes: z
+    .number()
+    .int()
+    .min(0)
+    .max(10080)
+    .refine((n) => n === 0 || n >= 5)
+    .default(0),
+});
+export const botSchema = profileInput.extend({
+  id: idSchema,
+  handle: z.string(),
+  home: z.string(),
+  projectId: z.string(),
+  hostId: z.string(),
+  paused: z.boolean(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  lastWakeAt: z.number(),
+  error: z.string().nullable(),
+});
+export type Bot = z.infer<typeof botSchema>;
+export type ProfileInput = z.infer<typeof profileInput>;
+// Creation defaults must never reset fields omitted from a partial update.
+const profilePatch = z.object({
+  name: profileInput.shape.name.optional(),
+  description: profileInput.shape.description.removeDefault().optional(),
+  avatar: profileInput.shape.avatar.removeDefault().optional(),
+  providerId: profileInput.shape.providerId.removeDefault().optional(),
+  model: profileInput.shape.model.removeDefault().optional(),
+  reasoningLevel: profileInput.shape.reasoningLevel.removeDefault().optional(),
+  permissionMode: profileInput.shape.permissionMode.removeDefault().optional(),
+  intervalMinutes: profileInput.shape.intervalMinutes
+    .removeDefault()
+    .optional(),
+});
+export const conversationSchema = z.object({
+  id: z.string(),
+  botId: idSchema,
+  key: z.string(),
+  threadId: z.string(),
+  title: z.string(),
+  kind: z.enum(["admin", "group", "mission"]),
+  createdAt: z.number(),
+});
+export type Conversation = z.infer<typeof conversationSchema>;
+export const attachmentSchema = z.object({
+  id: z.string().uuid(),
+  roomId: z.string().uuid(),
+  projectId: z.string(),
+  name: z.string(),
+  path: z.string(),
+  mimeType: z.string().optional(),
+  type: z.enum(["localFile", "localImage"]),
+  sizeBytes: z.number(),
+});
+export type Attachment = z.infer<typeof attachmentSchema>;
+export const jobSchema = z.object({
+  id: z.string(),
+  botId: idSchema,
+  conversationKey: z.string(),
+  threadId: z.string().nullable(),
+  text: z.string(),
+  status: z.enum([
+    "queued",
+    "dispatching",
+    "running",
+    "done",
+    "error",
+    "cancelled",
+  ]),
+  cancellationPending: z.boolean().optional(),
+  reply: z.string().nullable(),
+  error: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  startedAt: z.number().nullable(),
+  dispatchStartedAt: z.number().nullable().default(null),
+  roomId: z.string().nullable(),
+  runId: z.string().nullable(),
+  triggerMessageId: z.string().nullable().default(null),
+  depth: z.number().int().default(0),
+  attachments: z.array(attachmentSchema).default([]),
+});
+export type Job = z.infer<typeof jobSchema>;
+export const emojiSchema = z
+  .string()
+  .min(1)
+  .max(32)
+  .refine(
+    (value) =>
+      Array.from(
+        new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+          value,
+        ),
+      ).length === 1 &&
+      /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(value),
+    "Choose one emoji.",
+  );
+export const reactionSchema = z.object({
+  messageId: z.string(),
+  emoji: emojiSchema,
+  actorId: z.string(),
+  actorName: z.string(),
+  createdAt: z.number(),
+});
+export type Reaction = z.infer<typeof reactionSchema>;
+export const roomSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().trim().min(1).max(80),
+  memberIds: z.array(idSchema).max(16),
+  pinned: z.boolean().optional(),
+  archived: z.boolean().optional(),
+  lastReadAt: z.number().optional(),
+  paused: z.boolean(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+export type Room = z.infer<typeof roomSchema>;
+export const messageSchema = z.object({
+  id: z.string(),
+  roomId: z.string(),
+  runId: z.string(),
+  botId: idSchema.nullable(),
+  speaker: z.string(),
+  replyTo: z.string().nullable().default(null),
+  attachments: z.array(attachmentSchema).default([]),
+  text: z.string(),
+  createdAt: z.number(),
+});
+export type RoomMessage = z.infer<typeof messageSchema>;
+export const runSchema = z.object({
+  id: z.string(),
+  roomId: z.string(),
+  status: z.enum(["queued", "running", "done", "stopped"]),
+  mode: z.literal("concurrent").optional(),
+  pendingJobIds: z.array(z.string()).default([]),
+  settledJobIds: z.array(z.string()).default([]),
+  round: z.number(),
+  remaining: z.array(idSchema),
+  next: z.array(idSchema),
+  jobId: z.string().nullable(),
+  createdAt: z.number(),
+  error: z.string().nullable(),
+});
+export type RoomRun = z.infer<typeof runSchema>;
+const roomInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  memberIds: z.array(idSchema).max(16),
+});
+export const rpcContract = defineRpcContract({
+  list: {
+    input: z.null(),
+    output: z.object({ bots: z.array(botSchema), rooms: z.array(roomSchema) }),
+  },
+  create: {
+    input: profileInput.extend({
+      mission: z.string().min(1).max(64000),
+      roomId: z.string().uuid().optional(),
+    }),
+    output: botSchema,
+  },
+  update: {
+    input: profilePatch.extend({
+      id: idSchema,
+      expectedUpdatedAt: z.number().optional(),
+    }),
+    output: botSchema,
+  },
+  get: {
+    input: z.object({ id: idSchema }),
+    output: z.object({
+      bot: botSchema,
+      conversations: z.array(conversationSchema),
+      jobs: z.array(jobSchema),
+    }),
+  },
+  pause: {
+    input: z.object({ id: idSchema, paused: z.boolean() }),
+    output: botSchema,
+  },
+  document: {
+    input: z.object({
+      id: idSchema,
+      file: z.enum(["MISSION.md", "MEMORY.md"]),
+    }),
+    output: z.object({ text: z.string(), version: z.string() }),
+  },
+  saveDocument: {
+    input: z.object({
+      id: idSchema,
+      file: z.enum(["MISSION.md", "MEMORY.md"]),
+      text: z.string().max(64000),
+      version: z.string(),
+    }),
+    output: z.object({ text: z.string(), version: z.string() }),
+  },
+  wake: {
+    input: z.object({ id: idSchema }),
+    output: z.object({ queued: z.boolean() }),
+  },
+  conversation: {
+    input: z.object({ id: idSchema }),
+    output: conversationSchema,
+  },
+  createRoom: {
+    input: roomInput.extend({ name: roomInput.shape.name.optional() }),
+    output: roomSchema,
+  },
+  updateRoom: {
+    input: roomInput.extend({
+      id: z.string().uuid(),
+      memberIds: roomInput.shape.memberIds.optional(),
+    }),
+    output: roomSchema,
+  },
+  deleteRoom: {
+    input: z.object({ id: z.string().uuid() }),
+    output: z.object({ deleted: z.boolean() }),
+  },
+  room: {
+    input: z.object({ id: z.string().uuid() }),
+    output: z.object({
+      room: roomSchema,
+      messages: z.array(messageSchema),
+      reactions: z.array(reactionSchema),
+      runs: z.array(runSchema),
+      jobs: z.array(jobSchema),
+    }),
+  },
+  upload: {
+    input: z.object({
+      id: z.string().uuid(),
+      name: z.string().min(1).max(255),
+      mimeType: z.string().max(150),
+      data: z.string().max(12_000_000),
+    }),
+    output: attachmentSchema,
+  },
+  composer: {
+    input: z.null(),
+    output: z.object({ voiceEnabled: z.boolean() }),
+  },
+  discardAttachment: {
+    input: z.object({ id: z.string().uuid(), attachmentId: z.string().uuid() }),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  transcribe: {
+    input: z.object({
+      data: z.string().max(12_000_000),
+      mimeType: z.string().max(150),
+      prompt: z.string().max(16000).optional(),
+    }),
+    output: z.object({ text: z.string() }),
+  },
+  send: {
+    input: z.object({
+      id: z.string().uuid(),
+      text: z.string().trim().max(16000),
+      attachmentIds: z.array(z.string().uuid()).max(10).default([]),
+      replyTo: z.string().nullable().default(null),
+      requestId: z.string().uuid(),
+    }),
+    output: messageSchema,
+  },
+  member: {
+    input: z.object({
+      id: z.string().uuid(),
+      botId: idSchema,
+      present: z.boolean(),
+    }),
+    output: roomSchema,
+  },
+  channelState: {
+    input: z.object({
+      id: z.string().uuid(),
+      pinned: z.boolean().optional(),
+      archived: z.boolean().optional(),
+      lastReadAt: z.number().optional(),
+    }),
+    output: roomSchema,
+  },
+  reaction: {
+    input: z.object({
+      id: z.string().uuid(),
+      messageId: z.string(),
+      emoji: emojiSchema,
+      active: z.boolean(),
+    }),
+    output: z.array(reactionSchema),
+  },
+  stopRoom: { input: z.object({ id: z.string().uuid() }), output: roomSchema },
+  resumeRoom: {
+    input: z.object({ id: z.string().uuid() }),
+    output: roomSchema,
+  },
+  cancelJob: {
+    input: z.object({ id: z.string() }),
+    output: z.object({ cancelled: z.boolean() }),
+  },
+});

@@ -391,6 +391,207 @@ const threadUrl = `/projects/${projectId}/threads/${threadId}`;
 
 const captures = [
   {
+    id: "bots-profile",
+    packageDir: "bb-plugin-bots",
+    fileName: "bot-profile.png",
+    setup: async (client) => {
+      await captures.find((capture) => capture.id === "bots-collection").setup(client);
+      await client.evaluate(`(() => {
+        const bot = Array.from(document.querySelectorAll('[data-resource-row] button')).find((button) => button.textContent.startsWith('Atlas'));
+        if (!bot) throw new Error('Atlas is missing from the live collection');
+        bot.click();
+      })()`);
+      await client.waitForInputValue("Bot name", "Atlas");
+      await client.waitForInputValue("Bot role", "Research and verify the facts");
+      await client.waitForText("Mission schedule");
+      await client.evaluate(`(() => {
+        const form = document.querySelector('form[aria-label="Bot profile"]');
+        if (!form || form.querySelectorAll('.bot-config-row').length !== 6 || !form.querySelector('button[aria-label="Mission schedule"]')) {
+          throw new Error('Expected native bot settings rows and schedule picker');
+        }
+        const width = form.closest('.bot-config-content').getBoundingClientRect().width;
+        if (width > 1024 || width < 900) throw new Error('Bot configuration must use BB collection width');
+        const save = Array.from(form.querySelectorAll('button')).find((button) => button.textContent === 'Save profile');
+        if (!save?.disabled) throw new Error('Unchanged profiles must disable Save');
+      })()`);
+    },
+  },
+  {
+    id: "bots-memory",
+    packageDir: "bb-plugin-bots",
+    fileName: "bot-memory.png",
+    setup: async (client) => {
+      await captures.find((capture) => capture.id === "bots-profile").setup(client);
+      await client.evaluate(`Array.from(document.querySelectorAll('.bot-tabs button')).find((button) => button.textContent === 'Memory').click()`);
+      await client.waitForText("MEMORY.md");
+      // Wait for the real file, not just the empty editor shell.
+      const started = Date.now();
+      while (!(await client.evaluate(`document.querySelector('textarea[aria-label="MEMORY.md"]')?.value.includes('ORBIT-42')`))) {
+        if (Date.now() - started > 10000) throw new Error('Atlas memory must contain the staged launch brief');
+        await sleep(100);
+      }
+      await client.evaluate(`(() => {
+        const editor = document.querySelector('textarea[aria-label="MEMORY.md"]');
+        const height = editor.getBoundingClientRect().height;
+        if (height < 208 || height > 400 || editor.disabled) throw new Error('Memory editor must be bounded and editable');
+        const save = Array.from(document.querySelectorAll('.bot-document button')).find((button) => button.textContent === 'Save memory');
+        if (!save?.disabled || !document.querySelector('.bot-document [data-icon="RotateCcw"]')) throw new Error('Expected native reload and unchanged-save controls');
+      })()`);
+    },
+  },
+  {
+    id: "bots-collection",
+    packageDir: "bb-plugin-bots",
+    fileName: "bots-collection.png",
+    setup: async (client) => {
+      await client.navigate("/");
+      await client.waitForText("Bots");
+      await client.evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('.channels-navigation button'))
+          .find((candidate) => candidate.textContent.trim() === 'Bots');
+        if (!button) throw new Error('Bots navigation is missing');
+        button.click();
+      })()`);
+      await client.waitForAriaButton("Filter bots");
+      await client.waitForAriaButton("Sort bots");
+      await client.waitForText("Research and verify the facts");
+      await client.evaluate(`(() => {
+        const collection = document.querySelector('[data-bots-collection]');
+        if (!collection?.querySelector('input[aria-label="Search bots"]') || !collection.querySelector('[data-resource-list-panel]')) {
+          throw new Error('Bots collection must use a search toolbar and native bordered list');
+        }
+        const rows = Array.from(collection.querySelectorAll('[data-resource-row]'));
+        for (const name of ['Atlas', 'Quinn', 'Relay', 'Scribe']) {
+          if (!rows.some((row) => row.textContent.includes(name) && row.textContent.includes('@'))) {
+            throw new Error('Missing staged bot: ' + name);
+          }
+        }
+        const width = collection.firstElementChild.getBoundingClientRect().width;
+        if (width > 1024 || width < 900) throw new Error('Bots collection must use BB collection content width');
+      })()`);
+    },
+  },
+  {
+    id: "bots",
+    packageDir: "bb-plugin-bots",
+    setup: async (client) => {
+      const { rooms } = await pluginRpc("bots", "list", null);
+      const room = rooms.find((candidate) => candidate.name === "Launch room");
+      if (!room) throw new Error("Seed the Launch room channel with Atlas and Scribe before capturing.");
+      await client.navigate("/");
+      await client.waitForText("Launch room");
+      await client.evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll(".channels-sidebar button"))
+          .find((candidate) => candidate.textContent.includes("Launch room"));
+        if (!button) throw new Error("Launch room is not visible in the Channels sidebar");
+        button.click();
+      })()`);
+      await client.waitForText("Launch room");
+      await client.waitForText("Atlas is ready. I will verify the facts before we decide.");
+      await client.waitForText("Scribe is ready. I will record our decisions and next steps.");
+      await client.waitForAriaButton("Channel members: 2 bots");
+      await client.waitForAriaButton("Attach files");
+      await client.waitForAriaButton("Dictate message");
+      await client.waitForText("launch-brief.txt");
+      await client.waitForText("ORBIT-42");
+      await client.evaluate(`(() => {
+        const messages = Array.from(document.querySelectorAll(".bot-room-message"));
+        for (const [speaker, reply] of [
+          ["Atlas", "Atlas is ready. I will verify the facts before we decide."],
+          ["Scribe", "Scribe is ready. I will record our decisions and next steps."],
+        ]) {
+          if (!messages.some((entry) => entry.querySelector("strong")?.textContent === speaker && entry.textContent.includes(reply))) {
+            throw new Error("Missing live bot reply from " + speaker);
+          }
+        }
+        for (const speaker of ["Atlas", "Scribe"]) {
+          if (!messages.some((entry) => entry.querySelector("strong")?.textContent === speaker && entry.textContent.includes("ORBIT-42"))) {
+            throw new Error("Missing attachment answer from " + speaker);
+          }
+        }
+        if (!document.querySelector('[aria-label="Channel conversation"]') || !document.querySelector(".channel-avatar-stack")) {
+          throw new Error("Channel transcript and avatar stack must be visible");
+        }
+        if (!document.querySelector('.channel-reactions button[aria-label="👍: You"]')) {
+          throw new Error("Seed a thumbs-up reaction on the live Atlas reply before capturing");
+        }
+        const header = document.querySelector(".channel-header");
+        const title = header.querySelector('button.channel-title');
+        const row = header.closest('[data-testid="app-page-header-content-row"]');
+        if (!title || title.textContent.trim() !== "#Launch room" || !title.getAttribute("aria-label").includes("Rename channel")) {
+          throw new Error("The channel name must be the clickable header title");
+        }
+        if (title.getBoundingClientRect().left > row.getBoundingClientRect().left + 24 || /Channels/.test(row.innerText)) {
+          throw new Error("The channel title must replace Channels at the left of the header");
+        }
+        const firstMessage = messages[0];
+        const composer = document.querySelector(".group-compose");
+        if (header.getBoundingClientRect().height > 40 || firstMessage.getBoundingClientRect().height > 50) {
+          throw new Error("Channels should use compact BB spacing in the header and transcript");
+        }
+        if (!composer.classList.contains("rounded-xl") || !composer.classList.contains("shadow-lift") || Math.abs(composer.getBoundingClientRect().height - 116) > 4 || composer.querySelector("textarea").disabled) {
+          throw new Error("Channel composer must match BB's native composer and remain usable");
+        }
+        if (Array.from(header.querySelectorAll("button")).some((button) => /pause|resume|stop|run/i.test(button.textContent + button.getAttribute("aria-label")))) {
+          throw new Error("Channels must not expose run or pause controls");
+        }
+        if (getComputedStyle(firstMessage.querySelector(".bot-message-actions")).position !== "absolute") {
+          throw new Error("Hidden message actions must not reserve transcript space");
+        }
+        document.querySelector(".channel-avatar-stack").click();
+      })()`);
+      await client.waitForText("Add bot");
+      await client.evaluate(`(() => {
+        const menu = document.querySelector('[role="dialog"][aria-label="Channel members"]');
+        if (!menu || !menu.textContent.includes("Atlas") || !menu.textContent.includes("Scribe") || /paused/i.test(menu.textContent)) {
+          throw new Error("Avatar stack must open the live member list with channel presence");
+        }
+        if (Array.from(menu.querySelectorAll("button")).at(-1)?.textContent.trim() !== "Add bot") {
+          throw new Error("Add bot must be at the bottom of the member menu");
+        }
+      })()`);
+    },
+  },
+  {
+    id: "bots-emoji",
+    packageDir: "bb-plugin-bots",
+    fileName: "emoji-picker.png",
+    setup: async (client) => {
+      await captures.find((capture) => capture.id === "bots").setup(client);
+      await client.clickFirstButtonWithAria("Channel members: 2 bots");
+      await client.clickFirstButtonWithAria("Add reaction");
+      await client.waitForAriaButton("Flags");
+      await client.evaluate(`(() => {
+        const picker = document.querySelector(".channel-emoji-picker");
+        for (const category of ["Recently Used", "Smileys & People", "Animals & Nature", "Food & Drink", "Travel & Places", "Activities", "Objects", "Symbols", "Flags"]) {
+          if (!Array.from(picker.querySelectorAll('[role="tab"]')).some((tab) => tab.getAttribute("aria-label") === category)) {
+            throw new Error("Missing emoji category: " + category);
+          }
+        }
+        if (picker.querySelectorAll('button[aria-label^="Skin tone"]').length !== 6 || picker.querySelector("img")) {
+          throw new Error("The full picker must have skin tones and use native emoji");
+        }
+        picker.querySelector("input").focus();
+      })()`);
+      await client.command("Input.insertText", { text: "otter" });
+      await client.waitForText("1 result found.");
+      await client.command("Input.dispatchKeyEvent", { type: "keyDown", key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 });
+      await client.command("Input.dispatchKeyEvent", { type: "keyUp", key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 });
+      await sleep(150);
+      await client.evaluate(`(() => {
+        if (document.activeElement?.getAttribute("data-unified") !== "1f9a6") {
+          throw new Error("Typing otter and pressing ArrowDown must focus the matching emoji");
+        }
+      })()`);
+      await client.clickFirstButtonWithAria("Clear");
+      await client.waitForInputValue("Type to search for an emoji", "");
+      await client.command("Input.insertText", { text: "Canada" });
+      await client.waitForAriaButton("flag: Canada");
+      await client.clickFirstButtonWithAria("Clear");
+      await client.waitForInputValue("Type to search for an emoji", "");
+    },
+  },
+  {
     id: "agent-checklists",
     packageDir: "bb-plugin-agent-checklists",
     setup: async (client) => {
@@ -408,6 +609,19 @@ const captures = [
       await client.clickSidebarButton("Agent Plugins");
       await client.waitForText("Installed");
       await client.waitForText("13 skills");
+    },
+  },
+  {
+    id: "spool",
+    packageDir: "bb-plugin-spool",
+    setup: async (client) => {
+      await client.navigate("/plugins/spool/spool");
+      await client.waitForText("Spool for BB");
+      await client.waitForText("MCP included");
+      await client.waitForText("Connect it once");
+      await client.waitForText("MCP surface");
+      await client.waitForText("Trust boundaries");
+      await client.waitForText("Audited:");
     },
   },
   {
@@ -760,8 +974,19 @@ try {
     process.stdout.write(`Capturing ${capture.id}...\n`);
     const cleanup = await capture.setup(client);
     try {
-      const outputPath = join(repoRoot, "packages", capture.packageDir, "assets", "staged-preview.png");
+      const outputPath = join(repoRoot, "packages", capture.packageDir, "assets", capture.fileName ?? "staged-preview.png");
+      // Use BB's real collapsed-sidebar state so publication does not expose
+      // unrelated local projects/threads alongside the deterministic fixtures.
+      const privateSidebar = capture.packageDir === "bb-plugin-bots" || capture.id === "spool";
+      if (privateSidebar) {
+        await client.evaluate(`document.querySelector('button[aria-label^="Toggle sidebar"]')?.click()`);
+        await sleep(350);
+      }
       await client.capture(outputPath);
+      if (privateSidebar) {
+        await client.evaluate(`document.querySelector('button[aria-label^="Toggle sidebar"]')?.click()`);
+        await sleep(350);
+      }
       process.stdout.write(`  ${outputPath}\n`);
     } finally {
       if (cleanup) await cleanup();

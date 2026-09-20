@@ -59,7 +59,8 @@ const eventCache = new Map<string, CachedThread>();
  * Page through the thread's events, newest first (the SDK pages backward from
  * the newest sequence), then reverse into ascending order for the rate walk.
  * Only the event types the walk needs are requested: provider item lifecycle
- * events and `thread/tokenUsage/updated` (provider usage snapshots).
+ * and visible-message delta events plus `thread/tokenUsage/updated` (provider
+ * usage snapshots).
  */
 async function fetchThreadEvents(
   bb: BbPluginApi,
@@ -76,6 +77,7 @@ async function fetchThreadEvents(
       types: [
         "client/turn/requested",
         "item/started",
+        "item/agentMessage/delta",
         "item/completed",
         "thread/tokenUsage/updated",
       ],

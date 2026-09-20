@@ -6,11 +6,17 @@ output tokens divided by active assistant-message time. It deliberately
 excludes hidden reasoning, commands, tool results, and other host work, so it
 answers “how quickly did the provider stream the text I saw?”
 
-The plugin reads BB's provider item lifecycle events and
-`thread/tokenUsage/updated`. Providers that do not report usable visible-output
-usage or completed assistant-message timings simply have no label. The label's
-tooltip includes the visible output tokens and usage samples included in the
-pooled rate.
+The plugin reads BB's provider item lifecycle and visible-message delta events,
+plus `thread/tokenUsage/updated`. It uses the running usage total when present,
+which avoids double-counting repeated snapshots, and falls back to the latest
+snapshot for older event rows. Providers that do not report usable
+visible-output usage or completed assistant-message timings simply have no
+label. The label's tooltip includes the visible output tokens and usage samples
+included in the pooled rate.
+
+BB stores events in batches, so a very short response can have no trustworthy
+duration in the event log. Those samples are omitted instead of producing a
+misleading rate.
 
 ## Staged preview
 

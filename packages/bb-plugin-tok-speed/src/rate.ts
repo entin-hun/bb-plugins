@@ -1,9 +1,10 @@
 // Pure computation for the token-throughput display.
 //
-// A turn consists of a sequence of provider responses. `last.outputTokens` is
-// the output-token delta for the response represented by the provider's usage
-// update (reasoning + visible text), not a running total. The badge subtracts
-// `last.reasoningOutputTokens` so it measures the visible output stream.
+// A turn consists of a sequence of provider responses. Providers report both
+// a running `total` and a `last` usage snapshot. We prefer the delta of the
+// running total because it remains correct when a provider repeats or
+// mislabels `last`; `last` is the fallback for older/incomplete rows. The
+// badge subtracts reasoning output so it measures the visible output stream.
 //
 // The host event log also contains the time spent executing commands and other
 // tools. Usage updates may arrive after those items, so using
@@ -51,13 +52,19 @@ export interface EventRow {
   data?: {
     providerThreadId?: string;
     target?: { expectedTurnId?: string } | null;
-    item?: { type?: string; id?: string } | null;
+    item?: { type?: string; id?: string; text?: string } | null;
     tokenUsage?: {
+      total?: {
+        outputTokens?: number | null;
+        reasoningOutputTokens?: number | null;
+      } | null;
       last?: {
         outputTokens?: number | null;
         reasoningOutputTokens?: number | null;
       } | null;
     } | null;
+    itemId?: string;
+    delta?: string;
   } | null;
 }
 
@@ -69,8 +76,8 @@ export interface ComputeTurnRatesArgs {
   /** Ignore provider samples longer than this (a cancelled/stalled sample is
    *  not meaningful throughput). Defaults to 30 minutes. */
   maxResponseMs?: number;
-  /** Ignore samples faster than this; a sub-50ms sample is a usage
-   *  report flushed before the item-start was recorded. */
+  /** Ignore samples faster than this; very short samples can be usage
+   *  reports flushed before the item-start was recorded. */
   minResponseMs?: number;
 }
 
@@ -79,6 +86,11 @@ interface OpenAnchor {
   kind: string;
   itemId: string;
   startedAt: number;
+  firstVisibleAt: number | null;
+  lastVisibleAt: number | null;
+  visibleDeltaCount: number;
+  visibleTextKnown: boolean;
+  hasVisibleText: boolean;
 }
 
 interface ProviderInterval {
@@ -86,6 +98,11 @@ interface ProviderInterval {
   itemId: string;
   startedAt: number;
   completedAt: number;
+}
+
+interface UsageCursor {
+  outputTokens: number;
+  reasoningOutputTokens: number;
 }
 
 // Only visible provider output anchors the badge. Reasoning and tool-call
@@ -116,6 +133,71 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
   const openByItem = new Map<string, OpenAnchor>();
   const intervalsByTurn = new Map<string, ProviderInterval[]>();
   const samplesByTurn = new Map<string, ResponseSample[]>();
+  // `tokenUsage.total` is a provider-session total, not a BB-turn total. Keep
+  // one cursor per provider session so interleaved turn scopes do not make a
+  // later total delta include the other turn's tokens.
+  const usageCursorBySource = new Map<string, UsageCursor>();
+
+  function setVisibleTextFromItem(
+    open: OpenAnchor,
+    text: string | undefined,
+  ): void {
+    if (text === undefined) return;
+    open.visibleTextKnown = true;
+    if (text.length > 0) open.hasVisibleText = true;
+  }
+
+  function usageOutputDelta(event: EventRow): number {
+    const usage = event.data?.tokenUsage;
+    const totalOutputTokens = nonNegativeFiniteNumber(
+      usage?.total?.outputTokens,
+    );
+    const totalReasoningOutputTokens = nonNegativeFiniteNumber(
+      usage?.total?.reasoningOutputTokens,
+    );
+    const sourceKey = event.data?.providerThreadId ?? "__thread__";
+    const previous = usageCursorBySource.get(sourceKey);
+    let outputTokens: number;
+    let reasoningOutputTokens: number;
+
+    if (
+      totalOutputTokens !== undefined &&
+      totalReasoningOutputTokens !== undefined
+    ) {
+      if (
+        previous !== undefined &&
+        totalOutputTokens >= previous.outputTokens &&
+        totalReasoningOutputTokens >= previous.reasoningOutputTokens
+      ) {
+        outputTokens = totalOutputTokens - previous.outputTokens;
+        reasoningOutputTokens =
+          totalReasoningOutputTokens - previous.reasoningOutputTokens;
+      } else {
+        // The first snapshot, or a provider/session reset, is represented by
+        // `last` because the total may include usage from before this event
+        // stream or from the previous provider session.
+        outputTokens =
+          nonNegativeFiniteNumber(usage?.last?.outputTokens) ?? 0;
+        reasoningOutputTokens =
+          nonNegativeFiniteNumber(usage?.last?.reasoningOutputTokens) ?? 0;
+      }
+
+      usageCursorBySource.set(sourceKey, {
+        outputTokens: totalOutputTokens,
+        reasoningOutputTokens: totalReasoningOutputTokens,
+      });
+    } else {
+      // Rows written by older BB versions may not contain the running total.
+      // Do not carry a stale total baseline across such a gap.
+      usageCursorBySource.delete(sourceKey);
+      outputTokens =
+        nonNegativeFiniteNumber(usage?.last?.outputTokens) ?? 0;
+      reasoningOutputTokens =
+        nonNegativeFiniteNumber(usage?.last?.reasoningOutputTokens) ?? 0;
+    }
+
+    return Math.max(0, outputTokens - reasoningOutputTokens);
+  }
 
   for (const event of events) {
     const scopeTurnId = event.scope?.kind === "turn" ? event.scope.turnId : undefined;
@@ -142,14 +224,69 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
       if (!scopeTurnId || !kind || !itemId || !turnIds.has(scopeTurnId)) continue;
       if (!PROVIDER_ITEM_KINDS.has(kind)) continue;
       const itemKey = scopeTurnId + "\u0000" + itemId;
-      if (!openByItem.has(itemKey)) {
-        openByItem.set(itemKey, {
+      const existing = openByItem.get(itemKey);
+      if (existing) {
+        setVisibleTextFromItem(existing, item?.text);
+      } else {
+        const open: OpenAnchor = {
           turnId: scopeTurnId,
           kind,
           itemId,
           startedAt: event.createdAt,
-        });
+          firstVisibleAt: null,
+          lastVisibleAt: null,
+          visibleDeltaCount: 0,
+          visibleTextKnown: false,
+          hasVisibleText: false,
+        };
+        setVisibleTextFromItem(open, item?.text);
+        openByItem.set(itemKey, open);
       }
+      continue;
+    }
+
+    if (event.type === "item/agentMessage/delta") {
+      const itemId = event.data?.itemId;
+      const delta = event.data?.delta;
+      if (
+        !scopeTurnId ||
+        !itemId ||
+        typeof delta !== "string" ||
+        delta.length === 0 ||
+        !turnIds.has(scopeTurnId)
+      ) {
+        continue;
+      }
+
+      const itemKey = scopeTurnId + "\u0000" + itemId;
+      let open = openByItem.get(itemKey);
+      if (!open) {
+        // Be tolerant of a provider whose item/started was pruned or arrived
+        // after the first delta. The delta is still a valid stream anchor.
+        open = {
+          turnId: scopeTurnId,
+          kind: "agentMessage",
+          itemId,
+          startedAt: event.createdAt,
+          firstVisibleAt: null,
+          lastVisibleAt: null,
+          visibleDeltaCount: 0,
+          visibleTextKnown: true,
+          hasVisibleText: false,
+        };
+        openByItem.set(itemKey, open);
+      }
+      open.visibleTextKnown = true;
+      open.hasVisibleText = true;
+      open.visibleDeltaCount += 1;
+      open.firstVisibleAt =
+        open.firstVisibleAt === null
+          ? event.createdAt
+          : Math.min(open.firstVisibleAt, event.createdAt);
+      open.lastVisibleAt =
+        open.lastVisibleAt === null
+          ? event.createdAt
+          : Math.max(open.lastVisibleAt, event.createdAt);
       continue;
     }
 
@@ -165,7 +302,19 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
       if (!open) continue;
       openByItem.delete(itemKey);
 
+      setVisibleTextFromItem(open, item?.text);
+      // A provider may create an empty agent-message placeholder for a
+      // tool-only response. Do not charge its usage to visible output when
+      // the event stream gives us enough text information to know it is empty.
+      if (open.visibleTextKnown && !open.hasVisibleText) continue;
+
       if (event.createdAt < open.startedAt) continue;
+      const hasUsableDeltaSpan =
+        open.visibleDeltaCount >= 2 &&
+        open.firstVisibleAt !== null &&
+        open.lastVisibleAt !== null &&
+        open.lastVisibleAt <= event.createdAt &&
+        open.lastVisibleAt > open.firstVisibleAt;
       let intervals = intervalsByTurn.get(scopeTurnId);
       if (!intervals) {
         intervals = [];
@@ -174,8 +323,12 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
       intervals.push({
         kind: open.kind,
         itemId: open.itemId,
-        startedAt: open.startedAt,
-        completedAt: event.createdAt,
+        startedAt: hasUsableDeltaSpan
+          ? open.firstVisibleAt!
+          : open.startedAt,
+        completedAt: hasUsableDeltaSpan
+          ? open.lastVisibleAt!
+          : event.createdAt,
       });
       continue;
     }
@@ -196,18 +349,18 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
         remaining.push(interval);
       }
     }
+    const outputTokens = usageOutputDelta(event);
+    // A zero snapshot can be a duplicate or a provider update that arrived
+    // before usage was populated. Keep `ready` pending so a later positive
+    // snapshot can still be matched to this response.
+    if (outputTokens <= 0 || ready.length === 0) {
+      continue;
+    }
+
     if (remaining.length > 0) {
       intervalsByTurn.set(scopeTurnId, remaining);
     } else {
       intervalsByTurn.delete(scopeTurnId);
-    }
-
-    const usageLast = event.data?.tokenUsage?.last;
-    const reportedOutputTokens = usageLast?.outputTokens ?? 0;
-    const reasoningOutputTokens = usageLast?.reasoningOutputTokens ?? 0;
-    const outputTokens = reportedOutputTokens - reasoningOutputTokens;
-    if (!Number.isFinite(outputTokens) || outputTokens <= 0 || ready.length === 0) {
-      continue;
     }
 
     // Item lifecycles are usually sequential, but union them defensively so a
@@ -262,6 +415,17 @@ export function computeTurnRates(args: ComputeTurnRatesArgs): Map<string, TurnRa
     });
   }
   return result;
+}
+
+function nonNegativeFiniteNumber(
+  value: number | null | undefined,
+): number | undefined {
+  return value !== null &&
+    value !== undefined &&
+    Number.isFinite(value) &&
+    value >= 0
+    ? value
+    : undefined;
 }
 
 /**
