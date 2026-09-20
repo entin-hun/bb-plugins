@@ -80,7 +80,7 @@ export default async function plugin(bb: BbPluginApi) {
       members[0]!.hostId,
       path,
       message,
-      store.messages(room.id, 8).filter((m) => m.id !== message.id),
+      store.visibleMessages(room.id, 8).filter((m) => m.id !== message.id),
       members,
       signal,
     );
@@ -408,15 +408,18 @@ export default async function plugin(bb: BbPluginApi) {
         }),
       ),
     deleteRoom: async ({ id }) => ({ deleted: await runtime.deleteRoom(id) }),
-    room: ({ id }) => ({
-      room: store.room(id),
-      messages: store.messages(id),
-      parents: store.parents(store.messages(id)),
-      hasOlder: store.messages(id, 1, 200).length > 0,
-      reactions: store.reactions(id),
-      runs: store.runs(id).slice(-50),
-      jobs: store.roomJobs(id),
-    }),
+    room: ({ id }) => {
+      const messages = store.visibleMessages(id);
+      return {
+        room: store.room(id),
+        messages,
+        parents: store.parents(messages),
+        hasOlder: store.visibleMessages(id, 1, 200).length > 0,
+        reactions: store.reactions(id),
+        runs: store.runs(id).slice(-50),
+        jobs: store.roomJobs(id),
+      };
+    },
     composer: async () => ({
       voiceEnabled: (await bb.sdk.system.config()).voiceTranscriptionEnabled,
     }),

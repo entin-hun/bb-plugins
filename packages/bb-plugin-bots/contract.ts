@@ -168,6 +168,10 @@ export const messageSchema = z.object({
   createdAt: z.number(),
 });
 export type RoomMessage = z.infer<typeof messageSchema>;
+/** Scheduled prompts are execution records, not chat messages. */
+export const isAutomationTrigger = (
+  message: Pick<RoomMessage, "automationId" | "botId">,
+) => !!message.automationId && message.botId === null;
 export const runSchema = z.object({
   id: z.string(),
   roomId: z.string(),

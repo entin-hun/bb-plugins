@@ -587,6 +587,69 @@ test("group members work concurrently and publish in completion order", async ()
   }
 });
 
+test("scheduled prompts stay out of the visible channel transcript", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    const trigger = x.runtime.send(
+      x.room,
+      "Inspect the event stream.",
+      randomUUID(),
+      [],
+      null,
+      undefined,
+      { automationId: "auto_status", botId: x.a.id, name: "Status check" },
+    );
+    assert.equal(trigger.botId, null);
+    assert.equal(trigger.automationId, "auto_status");
+    assert.equal(x.store.messages(x.room.id).length, 1);
+    assert.equal(x.store.visibleMessages(x.room.id).length, 0);
+    assert.equal(x.store.history(x.room.id).messages.length, 0);
+    assert.equal(x.store.room(x.room.id).updatedAt, 1);
+
+    const reply = {
+      ...trigger,
+      id: `${trigger.id}:${x.a.id}`,
+      botId: x.a.id,
+      speaker: x.a.name,
+      text: "The stream is healthy.",
+      replyTo: trigger.id,
+      createdAt: trigger.createdAt + 1,
+    };
+    x.store.putMessage(reply);
+    const room = (await x.harness.behavior.callRpc("room", {
+      id: x.room.id,
+    })) as { messages: typeof reply[]; parents: typeof reply[] };
+    assert.deepEqual(room.messages.map((message) => message.id), [reply.id]);
+    assert.equal(room.parents.length, 0);
+  } finally {
+    await x.close();
+  }
+});
+
+test("silent scheduled runs do not mark a channel unread", async () => {
+  const x = setup();
+  try {
+    const trigger = x.runtime.send(
+      x.room,
+      "Check for actionable changes.",
+      randomUUID(),
+      [],
+      null,
+      undefined,
+      { automationId: "auto_status", botId: x.a.id, name: "Status check" },
+    );
+    await x.runtime.drive(x.a);
+    const job = x.store.requestJobs(trigger.id)[0]!;
+    x.runtime.complete(job.threadId!, "[PASS]");
+    await x.runtime.driveRoom(x.room);
+    assert.equal(x.store.room(x.room.id).updatedAt, 1);
+    assert.equal(x.store.visibleMessages(x.room.id).length, 0);
+  } finally {
+    await x.close();
+  }
+});
+
 test("queued bot responses use current room context when they start", async () => {
   const x = setup();
   try {

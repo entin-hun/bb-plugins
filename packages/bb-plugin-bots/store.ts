@@ -2,7 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile, rename, lstat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type Database from "better-sqlite3";
-import { runSchema, jobSchema, messageSchema } from "./contract";
+import {
+  isAutomationTrigger,
+  runSchema,
+  jobSchema,
+  messageSchema,
+} from "./contract";
 import type {
   Attachment,
   Bot,
@@ -184,10 +189,29 @@ export class Store {
         .all(roomId, limit, offset) as { json: string }[]
     ).map((r) => messageSchema.parse(JSON.parse(r.json)));
   }
+  visibleMessages(roomId: string, limit = 200, offset = 0): RoomMessage[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT json FROM (
+            SELECT rowid,json FROM room_messages
+            WHERE room_id=?
+              AND NOT (json_extract(json,'$.automationId') IS NOT NULL
+                       AND json_extract(json,'$.botId') IS NULL)
+            ORDER BY rowid DESC LIMIT ? OFFSET ?
+          ) ORDER BY rowid`,
+        )
+        .all(roomId, limit, offset) as { json: string }[]
+    ).map((r) => messageSchema.parse(JSON.parse(r.json)));
+  }
   firstMessage(roomId: string): RoomMessage | null {
     const row = this.db
       .prepare(
-        "SELECT json FROM room_messages WHERE room_id=? ORDER BY rowid ASC LIMIT 1",
+        `SELECT json FROM room_messages
+         WHERE room_id=?
+           AND NOT (json_extract(json,'$.automationId') IS NOT NULL
+                    AND json_extract(json,'$.botId') IS NULL)
+         ORDER BY rowid ASC LIMIT 1`,
       )
       .get(roomId) as { json: string } | undefined;
     return row ? messageSchema.parse(JSON.parse(row.json)) : null;
@@ -197,7 +221,7 @@ export class Store {
       ...new Set(messages.flatMap((m) => (m.replyTo ? [m.replyTo] : []))),
     ].flatMap((id) => {
       const m = this.message(id);
-      return m ? [m] : [];
+      return m && !isAutomationTrigger(m) ? [m] : [];
     });
   }
   history(roomId: string, before?: string, query = "", limit = 50) {
@@ -214,6 +238,8 @@ export class Store {
       this.db
         .prepare(
           `SELECT json FROM room_messages WHERE room_id=? AND rowid<?
+      AND NOT (json_extract(json,'$.automationId') IS NOT NULL
+               AND json_extract(json,'$.botId') IS NULL)
       AND (?='' OR instr(lower(json_extract(json,'$.text')),lower(?))>0 OR instr(lower(json_extract(json,'$.speaker')),lower(?))>0)
       ORDER BY rowid DESC LIMIT ?`,
         )

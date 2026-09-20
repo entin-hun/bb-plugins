@@ -9,6 +9,7 @@ import type {
   RoomMessage,
   RoomRun,
 } from "./contract";
+import { isAutomationTrigger } from "./contract";
 import { Store } from "./store";
 import { chatGuidance } from "./chat-guidance";
 export const errorText = (cause: unknown) =>
@@ -302,9 +303,6 @@ export class Runtime {
     };
     if (room.memberIds.length > 16)
       throw new Error("A channel can have up to 16 bots.");
-    const shouldAutoTitle =
-      isAutoTitlePlaceholder(room.name) &&
-      this.store.messages(room.id, 1).length === 0;
     const now = Date.now();
     const run: RoomRun = {
       id: requestId,
@@ -337,6 +335,10 @@ export class Runtime {
       attachments,
       replyTo,
     };
+    const shouldAutoTitle =
+      !isAutomationTrigger(m) &&
+      isAutoTitlePlaceholder(room.name) &&
+      this.store.visibleMessages(room.id, 1).length === 0;
     const members = room.memberIds
       .map((id) => this.store.get(id))
       .filter((b) => !b.retired && b.id !== author?.botId);
@@ -373,7 +375,8 @@ export class Runtime {
           this.invite(room, run, m, botId, author?.depth ?? 0);
       if (!run.pendingJobIds.length && !run.routing) run.status = "done";
       this.store.putRun(run);
-      this.store.putRoom({ ...room, updatedAt: now });
+      if (!isAutomationTrigger(m))
+        this.store.putRoom({ ...room, updatedAt: now });
     })();
     this.changed();
     if (shouldAutoTitle) this.startRoomTitle(this.store.room(room.id), m);
@@ -738,7 +741,7 @@ export class Runtime {
         ? this.store.message(job.triggerMessageId)
         : null;
     if (!trigger) return; // An older saved job already has its prompt.
-    const recent = this.store.messages(room.id, 40);
+    const recent = this.store.visibleMessages(room.id, 40);
     const transcript = recent
       .map(
         (m) =>
@@ -1074,6 +1077,8 @@ export class Runtime {
             ...currentRoom,
             updatedAt: Math.max(currentRoom.updatedAt + 1, Date.now()),
           });
+          if (isAutoTitlePlaceholder(currentRoom.name))
+            this.startRoomTitle(currentRoom, reply);
         }
         if (job.depth < 2)
           for (const id of room.memberIds)

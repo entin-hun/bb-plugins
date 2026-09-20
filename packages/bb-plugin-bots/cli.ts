@@ -897,7 +897,7 @@ export function registerCli(
             [selector] = a.positional(1),
             room = channel(selector!, ctx.threadId);
           const { limit, offset } = a.page(),
-            messages = store.messages(room.id, limit, offset),
+            messages = store.visibleMessages(room.id, limit, offset),
             ids = new Set(messages.map((m) => m.id));
           return emit({
             messages,
