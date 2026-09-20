@@ -123,9 +123,12 @@ export function requestStatus(
     complete:
       ["done", "stopped"].includes(run.status) && unfinished.length === 0,
     status: run.status,
-    error: run.error?.includes("32-response limit")
-      ? run.error
-      : (latest.find((j) => j.status === "error")?.error ?? null),
+    routing: run.routing ?? null,
+    error:
+      run.routingError ??
+      (run.error?.includes("32-response limit")
+        ? run.error
+        : (latest.find((j) => j.status === "error")?.error ?? null)),
     total: jobs.length,
     pending: unfinished.length,
     failed: latest.filter((j) => j.status === "error").length,
@@ -215,6 +218,7 @@ export function registerChannelTools(
       name: z.string().trim().min(1).max(80),
       memberIds: z.array(idSchema).max(16),
       requestId: z.string().uuid(),
+      responseBehavior: z.enum(["smart", "directed", "everyone"]).optional(),
     }),
     (input, threadId) => {
       return handlers.createRoom({
@@ -234,9 +238,30 @@ export function registerChannelTools(
   );
   tool(
     "bots_channel_send",
-    "Post a message as the calling agent and request bot replies. Plain text addresses all channel members; @handle targets one. Bot callers cannot send to their current channel: their final answer posts there automatically. Returns a request ID; use bots_channel_request to collect replies. Reuse requestId on retries.",
+    "Post as the calling agent. @handle or a reply targets a bot; @all explicitly requests everyone's input. Unaddressed messages follow the channel's Smart/Directed/Everyone behavior. Bot callers use their final answer for their current channel. Returns a request ID; use bots_channel_request to collect replies. Reuse requestId on retries.",
     rpcContract.send.input,
     (input, threadId) => send(input, threadId),
+  );
+  tool(
+    "bots_channel_behavior",
+    "Set a channel's response behavior. Smart chooses relevant bots, Directed only responds to mentions/replies, Everyone invites all members. @all always requests all bots.",
+    z.object({
+      id: z.string().uuid(),
+      responseBehavior: z.enum(["smart", "directed", "everyone"]),
+    }),
+    (input, threadId) => {
+      authorizeChannel(store, threadId, input.id);
+      return handlers.channelState(input);
+    },
+  );
+  tool(
+    "bots_channel_retry_routing",
+    "Retry Smart routing when no bots could be selected because the routing model failed.",
+    rpcContract.retryRouting.input,
+    (input, threadId) => {
+      authorizeChannel(store, threadId, input.id);
+      return handlers.retryRouting(input);
+    },
   );
   tool(
     "bots_channel_react",

@@ -550,7 +550,15 @@ test("CLI activity and per-response stop preserve the channel and separate missi
     await x.ok(["resume", b.id]);
     await x.ok(["wake", b.id]);
     const room = roomSchema.parse(
-      await x.ok(["channel", "create", "Work", "--bot", b.id]),
+      await x.ok([
+        "channel",
+        "create",
+        "Work",
+        "--bot",
+        b.id,
+        "--behavior",
+        "everyone",
+      ]),
     );
     await x.ok(["channel", "send", "Work", "--text", "Please help"]);
     await x.ok(["pause", b.id]);
@@ -741,7 +749,7 @@ test("CLI agent sends preserve caller identity and expose consultation status", 
     const room = roomSchema.parse(await x.ok(args));
     assert.equal(roomSchema.parse(await x.ok(args)).id, room.id);
     const m = messageSchema.parse(
-      await x.ok(["channel", "send", room.id, "--text", "Review this"], {
+      await x.ok(["channel", "send", room.id, "--text", "@all Review this"], {
         threadId: "thr_agent",
       }),
     );
@@ -771,7 +779,7 @@ test("bot CLI callers cannot inspect or administer another bot's private state",
       await x.ok(["channel", "create", "Private Beta", "--bot", b.id]),
     );
     const message = messageSchema.parse(
-      await x.ok(["channel", "send", room.id, "--text", "Private brief"]),
+      await x.ok(["channel", "send", room.id, "--text", "@all Private brief"]),
     );
     const job = x.store.requestJobs(message.id)[0]!;
     x.store.putConversation({
@@ -803,6 +811,35 @@ test("bot CLI callers cannot inspect or administer another bot's private state",
     assert.equal(x.store.job(job.id)?.status, "queued");
     assert.equal(x.store.get(b.id).retired, undefined);
     assert.equal((await x.run(["mission", a.id], ctx)).exitCode, 0);
+  } finally {
+    await x.close();
+  }
+});
+
+test("CLI response behavior validates modes and remembers the owner's choice", async () => {
+  const x = await setup();
+  try {
+    const first = roomSchema.parse(await x.ok(["channel", "create", "First"]));
+    assert.equal(first.responseBehavior, "smart");
+    await x.ok(["channel", "behavior", first.id, "directed"]);
+    assert.deepEqual(await x.ok(["channel", "behavior", first.id]), {
+      responseBehavior: "directed",
+    });
+    assert.equal(
+      roomSchema.parse(await x.ok(["channel", "create", "Second"]))
+        .responseBehavior,
+      "directed",
+    );
+    assert.notEqual(
+      (await x.run(["channel", "behavior", first.id, "invalid"])).exitCode,
+      0,
+    );
+    assert.equal(
+      roomSchema.parse(
+        await x.ok(["channel", "create", "Review", "--behavior", "everyone"]),
+      ).responseBehavior,
+      "everyone",
+    );
   } finally {
     await x.close();
   }

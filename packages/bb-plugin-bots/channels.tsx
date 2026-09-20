@@ -29,6 +29,7 @@ import {
 import { ProfileForm, WorkList, ErrorMessage, message } from "./bot-ui";
 import { channelWork } from "./channel-work";
 import { ChannelSearch } from "./channel-search";
+import { ChannelAttachments } from "./channel-attachments";
 import { GroupComposer } from "./composer";
 import { Menu, Modal, InvitePicker, ReactionPicker } from "./channel-controls";
 
@@ -731,6 +732,40 @@ export function ChannelsHeader({ subPath }: PluginNavPanelProps) {
           </Button>
         }
       >
+        <div className="channel-menu-label">Response behavior</div>
+        {(
+          [
+            ["smart", "Smart", "Choose relevant bots"],
+            ["directed", "Directed", "Only mentions and replies"],
+            ["everyone", "Everyone", "All bots can respond"],
+          ] as const
+        ).map(([value, label, hint]) => (
+          <button
+            key={value}
+            className="channel-menu-row"
+            aria-pressed={(room.responseBehavior ?? "everyone") === value}
+            disabled={pending}
+            onClick={() =>
+              void act(() =>
+                rpc.call("channelState", {
+                  id: room.id,
+                  responseBehavior: value,
+                  rememberDefault: true,
+                }),
+              )
+            }
+          >
+            <span className="channel-mode-mark" aria-hidden>
+              {(room.responseBehavior ?? "everyone") === value && (
+                <Icon name="Check" />
+              )}
+            </span>
+            <span className="channel-bot-name">
+              {label}
+              <small>{hint}</small>
+            </span>
+          </button>
+        ))}
         <button
           className="channel-menu-row"
           onClick={() => setActivityOpen(true)}
@@ -1167,24 +1202,14 @@ function ChannelChat({ id }: { id: string }) {
                     />
                   )}
                   {!!m.attachments.length && (
-                    <div className="group-attachments">
-                      {m.attachments.map((a) => (
-                        <a
-                          className="group-attachment"
-                          key={a.id}
-                          href={`/api/v1/plugins/bots/http/attachment?id=${encodeURIComponent(a.id)}`}
-                          download={a.name}
-                        >
-                          <Icon name="Paperclip" />
-                          <span>{a.name}</span>
-                          <span className="bot-help">
-                            {a.sizeBytes < 1024
-                              ? `${a.sizeBytes} B`
-                              : `${Math.ceil(a.sizeBytes / 1024)} KB`}
-                          </span>
-                        </a>
-                      ))}
-                    </div>
+                    <ChannelAttachments
+                      attachments={m.attachments}
+                      onImageLoad={() => {
+                        const el = transcript.current;
+                        if (el && atBottom.current && !jumpTarget)
+                          el.scrollTop = el.scrollHeight;
+                      }}
+                    />
                   )}
                   {!!grouped.length && (
                     <div className="channel-reactions">
@@ -1310,6 +1335,39 @@ function ChannelChat({ id }: { id: string }) {
                   Retry response
                 </Button>
               </div>
+            </div>
+          ))}
+        {data.runs.some(
+          (r) => r.routing === "pending" && r.status === "running",
+        ) && (
+          <p className="channel-routing-status" role="status">
+            Choosing who can help…
+          </p>
+        )}
+        {data.runs
+          .filter((r) => r.routing === "error")
+          .slice(-3)
+          .map((r) => (
+            <div key={r.id} className="channel-response-error" role="status">
+              <span>{r.routingError}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!!room.archived || !!retrying}
+                onClick={async () => {
+                  setRetrying(r.id);
+                  try {
+                    await rpc.call("retryRouting", { id, requestId: r.id });
+                    load();
+                  } catch (e) {
+                    setFailure(message(e));
+                  } finally {
+                    setRetrying(null);
+                  }
+                }}
+              >
+                Retry routing
+              </Button>
             </div>
           ))}
         {working.map((current) => {

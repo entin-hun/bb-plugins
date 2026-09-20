@@ -14,13 +14,25 @@ and native controls. Mission and memory editors are resizable, start at a bounde
 height, and show unsaved/saved state. Reloading with unsaved edits asks before
 discarding them. Profile, mission, memory, and new-bot drafts survive navigation and reloads on the same device. Profile and document saves reject stale versions instead of overwriting newer edits. Interrupted host cancellation stays visible and retries automatically.
 
-An ordinary message addresses the channel’s members. `@handle` addresses specific bots; `@all` addresses everyone. Bots work concurrently and post as they finish. A bot can request a teammate’s help with an explicit mention, with up to two further handoffs per message. `[PASS]` produces no public reply.
+The channel menu has three **Response behavior** choices:
+
+- **Smart** chooses the smallest relevant set of bots for an unaddressed message, including none for acknowledgments and finished conversations. New channels start here.
+- **Directed** only calls bots you mention or reply to.
+- **Everyone** lets all members consider unaddressed messages, useful for group reviews.
+
+`@handle` and replies to a bot address that bot directly in every mode; `@all` explicitly addresses everyone. Choosing a mode in the UI or owner CLI remembers it for future channels. Existing channels keep Everyone until changed. Bots work concurrently and post as they finish. A bot can request a teammate’s help with an explicit mention, with up to two further handoffs per message. `[PASS]` produces no public reply unless the bot has published images for that response.
 
 Channels do not need to be started or resumed. A working bot appears at the bottom of the transcript with animated dots and a **Stop** control for its current response. Stopping a response leaves the channel open. One bot handles one task at a time to keep its memory consistent; another request waits for that bot while other members continue independently.
 
 Hover or focus a message for **React**, **Reply**, **Copy**, or **View work**. The full emoji picker supports text search, category browsing, skin tones, recently used emoji, and keyboard selection. It uses [Emoji Picker React](https://github.com/ealush/emoji-picker-react) with native emoji and BB’s theme colors. Emoji reactions persist, show who reacted, and toggle when clicked. Bots can use `bots_react` to acknowledge a message without writing another response. Reactions do not start more work. Replies link back to their original message.
 
+Bots receive standing guidance to write brief, conversational replies, avoid repeated summaries and assistant boilerplate, and stay silent when they have nothing useful to add. They can react sparingly for acknowledgment (👍), completed or verified work (✅), or celebration (🎉). Direct questions and assignments still need an answer, action, or blocker.
+
+Smart routing uses the configured BB providers and credentials. **Plugins → Bots → Settings** controls the routing provider/model and fallback (defaults: Pi / `opencode-go/qwen3.8-flash`, then Codex / `gpt-5.6-luna`). Use models available in your BB catalog; no Jev model is assumed. The current public SDK exposes agent sessions, so routing uses a temporary hidden session with a bounded classification prompt, followed by a fallback on failure. These sessions still receive BB's global instructions and provider tools; they are not an isolated inference sandbox. They are stopped and deleted after each attempt and recovered after restart. Mentions, replies, and Everyone bypass the classifier. If both attempts fail, the message stays visible with **Retry routing**; it never silently wakes every bot. Classification adds a provider round trip and can take up to 30 seconds per attempt.
+
 The composer uses BB’s native surface, spacing, and button conventions. It supports attachments through the plus button, paste, and drag and drop (10 files per message, 8 MB each). Dictation uses BB’s configured transcription service and microphone preference. Message text, attachment references, and replies survive reloads. Unsent uploads expire after seven days.
+
+PNG, JPEG, GIF, and WebP images appear as composer previews and inline in sent messages, including images pasted with text. Click an image to expand it and download the original. Other file types stay downloadable. Image bytes are checked before inline display; SVG and HTML remain downloads. Bots use `bots_publish_image` (or `bb bots publish-image`) with an absolute path inside their workspace to add up to ten images to their current final response. This publishes one message containing text and images, or images alone with `[PASS]`; cancelled or failed responses do not post images.
 
 The Channels section supports unread indicators and filtering. Right-click a channel for **Rename**, **Archive**, or **Delete**; archived channels offer **Restore** and **Delete**. Keyboard users can open this menu with Shift+F10. The channel menu in the header also contains activity, rename, pin, archive, and delete actions. Archiving cancels unfinished work and preserves history; restoring makes the channel available again. Deletion requires confirmation, stops unfinished responses, and permanently removes channel messages, reactions, membership, activity, and draft uploads. Bot profiles, workspaces, and other channels are kept. Existing BB work threads and sent files in BB's project storage remain under BB's own retention. Removing a bot cancels its pending channel work and preserves its messages and reactions. Channels support up to 16 bots.
 
@@ -60,7 +72,8 @@ validation as the UI.
 
 ```sh
 bb bots create Atlas --mission 'Verify facts and cite sources.' --json
-bb bots channel create 'Launch room' --bot @atlas --json
+bb bots channel create 'Launch room' --bot @atlas --behavior smart --json
+bb bots channel behavior 'Launch room' directed --json
 bb bots channel send 'Launch room' --text '@atlas Review this brief.' --attach ./brief.pdf --json
 bb bots channel messages 'Launch room' --json
 bb bots channel search 'Launch room' 'decision' --json
@@ -90,9 +103,9 @@ and command metadata directly.
 
 Channels replace the Council plugin. Any BB agent can discover advisors, create a
 channel, invite bots, post a brief, collect replies and failures, ask follow-ups,
-and react through seven native tools: `bots_channels`, `bots_channel_create`,
+and react through native tools: `bots_channels`, `bots_channel_create`,
 `bots_channel_invite`, `bots_channel_send`, `bots_channel_read`,
-`bots_channel_request`, and `bots_channel_react`. The bundled skill teaches this
+`bots_channel_request`, `bots_channel_react`, `bots_channel_behavior`, and `bots_channel_retry_routing`. Channel bots also receive `bots_react` and `bots_publish_image`. The bundled skill teaches this
 workflow, including requests to “ask the council.”
 
 Messages sent from BB threads show the calling bot or **BB agent**, with a link
@@ -102,7 +115,7 @@ the message. Channel creation accepts `--request-id UUID` for safe retries too.
 
 ```sh
 bb bots channel create 'Design review' --bot @grug --bot @architect --bot @designer --json
-bb bots channel send 'Design review' --text 'Assess this proposal independently: ...' --json
+bb bots channel send 'Design review' --text '@all Assess this proposal independently: ...' --json
 bb bots channel request 'Design review' MESSAGE_ID --json
 bb bots channel send 'Design review' --text '@grug Summarize the findings and dissent.' --json
 ```
@@ -193,3 +206,9 @@ The migrated Council channel, with live replies from Grug, Architect, and Design
 and the compact membership menu. Their original model and reasoning choices are retained.
 
 ![Council advisors consulting through a BB channel](assets/channel-consultation.png)
+
+The image workflow and response menu below were captured in the running app after a user pasted an image and a real bot published the same local preview through its tool.
+
+![Inline owner and bot images in a BB channel](assets/channel-images.png)
+
+![Channel response behavior menu](assets/channel-behavior.png)

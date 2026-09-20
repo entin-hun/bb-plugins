@@ -33,6 +33,21 @@ const profileFlags = [
 ];
 const commands = [
   [
+    "channel behavior",
+    "Read or set who responds; also remembers the default for new channels",
+    "<channel> [smart|directed|everyone]",
+  ],
+  [
+    "channel retry-routing",
+    "Retry choosing bots for a message",
+    "<channel> <request-id>",
+  ],
+  [
+    "publish-image",
+    "Embed a local image in your active bot response",
+    "<absolute-path> [--alt TEXT]",
+  ],
+  [
     "list",
     "List bots and channels",
     "[--retired | --all] [--limit N] [--offset N]",
@@ -88,7 +103,7 @@ const commands = [
   [
     "channel create",
     "Create an empty or populated channel",
-    "[name] [--bot BOT ...] [--request-id UUID]",
+    "[name] [--bot BOT ...] [--behavior smart|directed|everyone] [--request-id UUID]",
   ],
   [
     "channel request",
@@ -250,6 +265,11 @@ export function registerCli(
   store: Store,
   handlers: PluginRpcHandlers<typeof rpcContract>,
   sendMessage: SendMessage,
+  publishImage: (
+    threadId: string,
+    path: string,
+    alt?: string,
+  ) => Promise<unknown>,
 ) {
   // Both entry points execute exactly the same validated operations.
   async function call<K extends Method>(
@@ -430,6 +450,15 @@ export function registerCli(
           if (!job || (caller?.botId && caller.botId !== job.botId))
             throw new UsageError("Work item is not available to this caller.");
           return job;
+        }
+        if (command === "publish-image") {
+          const a = argumentsFor(rest, ["alt"]);
+          const [path] = a.positional(1);
+          if (!ctx.threadId)
+            throw new UsageError(
+              "Run this command from an active bot channel response.",
+            );
+          return emit(await publishImage(ctx.threadId, path!, a.text("alt")));
         }
         if (caller?.botId && command === "create")
           throw new UsageError(
@@ -623,7 +652,7 @@ export function registerCli(
           );
         }
         if (command === "channel create") {
-          const a = argumentsFor(rest, ["request-id"], [], ["bot"]),
+          const a = argumentsFor(rest, ["request-id", "behavior"], [], ["bot"]),
             [name] = a.positional(0, 1);
           return emit(
             await call("createRoom", {
@@ -634,8 +663,29 @@ export function registerCli(
                 a.many("bot").map((s) => bot(s).id),
               ),
               requestId: a.text("request-id"),
+              responseBehavior: a.text("behavior"),
             }),
           );
+        }
+        if (command === "channel behavior") {
+          const a = argumentsFor(rest),
+            [selector, behavior] = a.positional(1, 2),
+            room = channel(selector!, ctx.threadId);
+          return emit(
+            behavior
+              ? await call("channelState", {
+                  id: room.id,
+                  responseBehavior: behavior,
+                  rememberDefault: !caller?.botId,
+                })
+              : { responseBehavior: room.responseBehavior ?? "everyone" },
+          );
+        }
+        if (command === "channel retry-routing") {
+          const a = argumentsFor(rest),
+            [selector, requestId] = a.positional(2),
+            room = channel(selector!, ctx.threadId);
+          return emit(await call("retryRouting", { id: room.id, requestId }));
         }
         if (
           command === "channel rename" ||

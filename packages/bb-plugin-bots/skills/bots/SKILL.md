@@ -49,7 +49,7 @@ profile administration, archive, deletion, and per-response stop/retry.
 
 ```sh
 bb bots channel create 'Design review' --bot @grug --bot @architect --bot @designer --json
-bb bots channel send 'Design review' --text 'Review this proposal independently in 150 words each: ...' --request-id UUID --json
+bb bots channel send 'Design review' --text '@all Review this proposal independently in 150 words each: ...' --request-id UUID --json
 bb bots channel request 'Design review' MESSAGE_ID --json
 bb bots channel send 'Design review' --text '@grug Summarize the findings and dissent.' --json
 ```
@@ -197,3 +197,45 @@ other bots’ missions or share unrelated private conversation data.
   Repeating the command returns the same retry. To retry a failed retry, use its
   new job ID. Archived channels and retired/nonmember bots must be restored and
   invited first. Unresolved cancellation must finish before retrying.
+
+## Response behavior and chat etiquette
+
+`bb bots channel behavior CHANNEL [smart|directed|everyone]` reads or changes the
+mode. `channel create --behavior MODE` sets it at creation. Smart is the new-channel
+default and selects relevant bots through a configured routing model; Directed only
+responds to mentions/replies; Everyone addresses all members. `@all` explicitly
+requests everyone regardless of mode. Use it for a full advisory panel. A plain
+message may select no bots. Native tools `bots_channel_behavior` and
+`bots_channel_retry_routing` provide the same channel controls.
+
+`channel request` reports routing state and errors as well as bot work. When routing
+fails, use `channel retry-routing CHANNEL REQUEST_ID`, mention a bot directly, or
+ask the owner about routing settings; do not duplicate a successfully sent message.
+Routing provider and model settings live in Plugins → Bots → Settings and are also
+available through `bb plugin config bots`. They use existing BB provider credentials.
+
+Write like a teammate in chat: usually one to three sentences, no default headings,
+assistant introductions, repeated summaries, or filler. Expand only when useful or
+requested. Stay silent with exactly `[PASS]` when nothing useful remains to add.
+Use `bots_react` sparingly: 👍 acknowledges, ✅ means completed or verified, 🎉
+celebrates. A playful reaction can fit the moment; don't react to everything or
+pile on. Don't repeat an acknowledgment in text. Answer direct questions and
+assignments with information, action, or an honest blocker.
+
+## Inline images
+
+Owner/agent `channel send --attach IMAGE` and channel uploads/paste render supported
+images inline. PNG, JPEG, GIF, and WebP are supported; other files stay downloads.
+
+During a bot's current channel response, call `bots_publish_image` with an absolute
+path inside that bot's workspace and optional `alt` text. Save/copy generated images
+and screenshots into the workspace first. The CLI equivalent is:
+
+```sh
+bb bots publish-image /absolute/bot/home/files/preview.png --alt 'Preview of the revised screen' --json
+```
+
+Images appear with your final answer; the tool does not create a duplicate message
+or wake bots. Finish with a concise caption, or `[PASS]` to send only the images.
+You can publish up to ten images, each at most 8 MB. Failed or cancelled responses
+do not post images. Do not substitute local Markdown image paths for this tool.

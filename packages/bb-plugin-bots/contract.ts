@@ -75,6 +75,7 @@ export const attachmentSchema = z.object({
   mimeType: z.string().optional(),
   type: z.enum(["localFile", "localImage"]),
   sizeBytes: z.number(),
+  alt: z.string().max(500).optional(),
 });
 export type Attachment = z.infer<typeof attachmentSchema>;
 export const jobSchema = z.object({
@@ -104,6 +105,7 @@ export const jobSchema = z.object({
   triggerMessageId: z.string().nullable().default(null),
   depth: z.number().int().default(0),
   attachments: z.array(attachmentSchema).default([]),
+  outputAttachments: z.array(attachmentSchema).default([]),
 });
 export type Job = z.infer<typeof jobSchema>;
 export const emojiSchema = z
@@ -128,6 +130,7 @@ export const reactionSchema = z.object({
   createdAt: z.number(),
 });
 export type Reaction = z.infer<typeof reactionSchema>;
+export const responseBehavior = z.enum(["smart", "directed", "everyone"]);
 export const roomSchema = z.object({
   id: z.string().uuid(),
   name: z.string().trim().min(1).max(80),
@@ -135,6 +138,7 @@ export const roomSchema = z.object({
   pinned: z.boolean().optional(),
   archived: z.boolean().optional(),
   lastReadAt: z.number().optional(),
+  responseBehavior: responseBehavior.optional(),
   paused: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -166,9 +170,13 @@ export const runSchema = z.object({
   jobId: z.string().nullable(),
   createdAt: z.number(),
   error: z.string().nullable(),
+  routing: z.enum(["pending", "done", "error"]).optional(),
+  routingError: z.string().optional(),
+  routingDepth: z.number().optional(),
 });
 export type RoomRun = z.infer<typeof runSchema>;
 const roomInput = z.object({
+  responseBehavior: responseBehavior.optional(),
   name: z.string().trim().min(1).max(80),
   memberIds: z.array(idSchema).max(16),
 });
@@ -324,6 +332,8 @@ export const rpcContract = defineRpcContract({
       pinned: z.boolean().optional(),
       archived: z.boolean().optional(),
       lastReadAt: z.number().optional(),
+      rememberDefault: z.boolean().optional(),
+      responseBehavior: responseBehavior.optional(),
     }),
     output: roomSchema,
   },
@@ -335,6 +345,10 @@ export const rpcContract = defineRpcContract({
       active: z.boolean(),
     }),
     output: z.array(reactionSchema),
+  },
+  retryRouting: {
+    input: z.object({ id: z.string().uuid(), requestId: z.string().uuid() }),
+    output: z.object({ ok: z.literal(true) }),
   },
   stopRoom: { input: z.object({ id: z.string().uuid() }), output: roomSchema },
   resumeRoom: {

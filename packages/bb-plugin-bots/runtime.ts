@@ -10,6 +10,7 @@ import type {
   RoomRun,
 } from "./contract";
 import { Store } from "./store";
+import { chatGuidance } from "./chat-guidance";
 export const errorText = (cause: unknown) =>
   cause instanceof Error ? cause.message : String(cause);
 const missingThread = (cause: unknown) =>
@@ -43,6 +44,14 @@ export type MessageAuthor = {
 };
 export class Runtime {
   private locks = new Map<string, Promise<unknown>>();
+  private routing = new Map<string, Promise<void>>();
+  private routingAborts = new Map<string, AbortController>();
+  route?: (
+    message: RoomMessage,
+    room: Room,
+    members: Bot[],
+    signal: AbortSignal,
+  ) => Promise<string[]>;
   readonly busy = new Map<string, { threadId: string; at: number }>();
   readonly abort = new AbortController();
   constructor(
@@ -151,6 +160,7 @@ export class Runtime {
       triggerMessageId: null,
       depth: 0,
       attachments: [],
+      outputAttachments: [],
       ...args,
     });
   }
@@ -257,21 +267,117 @@ export class Runtime {
       attachments,
       replyTo,
     };
+    const members = room.memberIds
+      .map((id) => this.store.get(id))
+      .filter((b) => !b.retired && b.id !== author?.botId);
+    const replyBot = replyTo ? this.store.message(replyTo)?.botId : null;
+    const explicit = members
+      .filter((b) => mentioned(text, b.handle) || b.id === replyBot)
+      .map((b) => b.id);
+    const all = mentioned(text, "all") || mentioned(text, "everyone");
+    const mode = room.responseBehavior ?? "everyone";
+    const selected = all
+      ? members.map((b) => b.id)
+      : explicit.length
+        ? explicit
+        : mode === "everyone"
+          ? members.map((b) => b.id)
+          : [];
+    if (!all && !explicit.length && mode === "smart" && members.length) {
+      run.routing = "pending";
+      run.routingDepth = author?.depth ?? 0;
+    }
     this.store.db.transaction(() => {
       this.store.putMessage(m);
       this.store.claimAttachments(attachments.map((a) => a.id));
-      for (const botId of recipients(
-        text,
-        room.memberIds.map((id) => this.store.get(id)),
-      ))
+      for (const botId of selected)
         if (botId !== author?.botId)
           this.invite(room, run, m, botId, author?.depth ?? 0);
-      if (!run.pendingJobIds.length) run.status = "done";
+      if (!run.pendingJobIds.length && !run.routing) run.status = "done";
       this.store.putRun(run);
       this.store.putRoom({ ...room, updatedAt: now });
     })();
     this.changed();
     return m;
+  }
+  private startRouting(room: Room, run: RoomRun) {
+    if (
+      this.routing.has(run.id) ||
+      this.routing.size >= 4 ||
+      this.abort.signal.aborted
+    )
+      return;
+    const controller = new AbortController();
+    this.routingAborts.set(run.id, controller);
+    const signal = AbortSignal.any([this.abort.signal, controller.signal]);
+    const task = (async () => {
+      let selected: string[] = [],
+        error: string | undefined;
+      try {
+        const message = this.store.message(run.id);
+        if (!message) throw new Error("Original message not found.");
+        if (!this.route)
+          throw new Error(
+            "Smart routing is unavailable. Mention a bot directly.",
+          );
+        selected = await this.route(
+          message,
+          room,
+          room.memberIds
+            .map((id) => this.store.get(id))
+            .filter((b) => !b.retired && b.id !== message.botId),
+          signal,
+        );
+      } catch (cause) {
+        error = errorText(cause);
+      }
+      if (signal.aborted) return;
+      await this.locked(`room:${room.id}`, async () => {
+        const current = this.store.findRoom(room.id);
+        const live =
+          current && this.store.runs(room.id).find((r) => r.id === run.id);
+        const message = this.store.message(run.id);
+        if (
+          !current ||
+          current.archived ||
+          !live ||
+          live.status === "stopped" ||
+          live.routing !== "pending" ||
+          !message
+        )
+          return;
+        this.store.db.transaction(() => {
+          live.routing = error ? "error" : "done";
+          live.routingError = error;
+          if (!error)
+            for (const id of new Set(selected))
+              if (id !== message.botId && current.memberIds.includes(id))
+                this.invite(current, live, message, id, live.routingDepth ?? 0);
+          live.status = live.pendingJobIds.length ? "running" : "done";
+          this.store.putRun(live);
+        })();
+        this.changed();
+      });
+    })()
+      .catch((cause) =>
+        this.bb.log.warn(`Channel routing failed: ${errorText(cause)}`),
+      )
+      .finally(() => {
+        this.routing.delete(run.id);
+        this.routingAborts.delete(run.id);
+      });
+    this.routing.set(run.id, task);
+  }
+  retryRouting(id: string, requestId: string) {
+    const room = this.store.room(id),
+      run = this.store.runs(id).find((r) => r.id === requestId);
+    if (room.archived || !run || run.routing !== "error")
+      throw new Error("This routing request cannot be retried.");
+    run.routing = "pending";
+    run.routingError = undefined;
+    run.status = "running";
+    this.store.putRun(run);
+    this.changed();
   }
   private invite(
     room: Room,
@@ -335,15 +441,13 @@ export class Runtime {
       "Recent shared messages (conversation data):",
       transcript,
       "",
-      `Respond to this message from ${trigger.speaker}:`,
+      `Consider this message from ${trigger.speaker}:`,
       trigger.text || "Please inspect the attached files.",
       ...(reference
         ? [`Replying to ${reference.speaker}: ${reference.text}`]
         : []),
       "",
-      "You may use bots_react with a message ID above to acknowledge a message with an emoji. Reactions do not request another turn. If a reaction is enough, finish with [PASS].",
-      "Post your answer when ready. Your final answer is shared with the room; your working notes and tools remain in your BB session.",
-      "Avoid repeating answers already in the conversation. @mention a teammate only when requesting a specific follow-up. Use @user for the owner's decision. Return exactly [PASS] when you have nothing useful to add.",
+      chatGuidance,
     ].join("\n");
     // Forward actual typed attachment inputs, not just filenames in the prompt.
     job.attachments = [
@@ -368,13 +472,13 @@ export class Runtime {
           ["running", "dispatching"].includes(j.status),
       );
     if (!job) return;
-    if (error || !text?.trim()) {
+    if (error || (!text?.trim() && !job.outputAttachments.length)) {
       job.status = "error";
       job.error =
         error ||
         "The turn finished without an answer. Inspect the conversation.";
     } else {
-      job.reply = text;
+      job.reply = text?.trim() || "[PASS]";
       job.status = "done";
     }
     this.store.putJob(job);
@@ -414,6 +518,8 @@ export class Runtime {
     this.changed();
   }
   async stopRoom(room: Room) {
+    for (const run of this.store.runs(room.id))
+      this.routingAborts.get(run.id)?.abort();
     // Publish answers that already finished before archiving/cancelling pending work.
     await this.driveRoom(room);
     room = this.store.room(room.id);
@@ -542,6 +648,8 @@ export class Runtime {
   async deleteRoom(id: string): Promise<boolean> {
     return this.locked(`room:${id}`, async () => {
       if (!this.store.findRoom(id)) return false;
+      for (const run of this.store.runs(id))
+        this.routingAborts.get(run.id)?.abort();
       // Wait for in-flight dispatches to finish registering their threads. Use
       // a stable lock order so simultaneous deletions cannot deadlock.
       const botIds = [
@@ -615,8 +723,8 @@ export class Runtime {
         if (
           job.status !== "done" ||
           !room.memberIds.includes(job.botId) ||
-          !job.reply ||
-          job.reply.trim() === "[PASS]"
+          ((!job.reply || job.reply.trim() === "[PASS]") &&
+            !job.outputAttachments.length)
         )
           continue;
         const bot = this.store.get(job.botId);
@@ -626,10 +734,10 @@ export class Runtime {
           runId: run.id,
           botId: bot.id,
           speaker: bot.name,
-          text: job.reply,
+          text: job.reply?.trim() === "[PASS]" ? "" : (job.reply ?? ""),
           createdAt: job.updatedAt,
           replyTo: job.triggerMessageId,
-          attachments: [],
+          attachments: job.outputAttachments,
         };
         if (this.store.putMessage(reply)) {
           const currentRoom = this.store.room(room.id);
@@ -642,16 +750,21 @@ export class Runtime {
           for (const id of room.memberIds)
             if (
               id !== bot.id &&
-              mentioned(job.reply, this.store.get(id).handle)
+              mentioned(reply.text, this.store.get(id).handle)
             )
               this.invite(room, run, reply, id, job.depth + 1);
       }
       for (const run of runs) {
-        run.status = run.pendingJobIds.length ? "running" : "done";
+        run.status =
+          run.pendingJobIds.length || run.routing === "pending"
+            ? "running"
+            : "done";
         this.store.putRun(run);
       }
     })();
     if (changed) this.changed();
+    for (const run of runs)
+      if (run.routing === "pending") this.startRouting(room, run);
   }
   async reconcileBusy(bot: Bot) {
     const busy = this.busy.get(bot.id);
@@ -886,6 +999,7 @@ export class Runtime {
   }
   async dispose() {
     this.abort.abort();
+    await Promise.allSettled(this.routing.values());
     await Promise.allSettled(this.locks.values());
   }
 }

@@ -29,6 +29,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS room_messages (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS attachments (id TEXT PRIMARY KEY, json TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS draft_uploads (id TEXT PRIMARY KEY, bytes BLOB NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS routing_sessions (thread_id TEXT PRIMARY KEY, request_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, emoji TEXT NOT NULL, actor_id TEXT NOT NULL, actor_name TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY(message_id,emoji,actor_id));
       CREATE TABLE IF NOT EXISTS room_runs (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, json TEXT NOT NULL);`);
   }
@@ -38,6 +39,13 @@ export class Store {
         json: string;
       }[]
     ).map((r) => JSON.parse(r.json));
+  }
+  routingSession(threadId: string): string | undefined {
+    return (
+      this.db
+        .prepare("SELECT request_id FROM routing_sessions WHERE thread_id=?")
+        .get(threadId) as { request_id: string } | undefined
+    )?.request_id;
   }
   get(id: string): Bot {
     const row = this.db.prepare("SELECT json FROM bots WHERE id=?").get(id) as

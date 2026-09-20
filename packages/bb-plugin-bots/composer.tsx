@@ -4,6 +4,7 @@ import type { Bot, RoomMessage, rpcContract } from "./contract";
 import { Button } from "./components/ui/button";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "./components/ui/coarse-pointer-sizing";
 import { BotOptions, matchingBots } from "./channel-controls";
+import { ChannelAttachments } from "./channel-attachments";
 import { emptyDraft, readDraft, prepareSend, clearSentDraft } from "./draft";
 
 const errorText = (e: unknown) => {
@@ -356,41 +357,29 @@ export function GroupComposer({
           </div>
         )}
         {!!draft.attachments.length && (
-          <div className="group-attachments">
-            {draft.attachments.map((a) => (
-              <span key={a.id} className="group-attachment">
-                <Icon name="Paperclip" />
-                <span>{a.name}</span>
-                <button
-                  aria-label={`Remove ${a.name}`}
-                  disabled={pending}
-                  onClick={async () => {
-                    if (sending.current || blocked) return;
-                    setUploading(true);
-                    try {
-                      await rpc.call("discardAttachment", {
-                        id: roomId,
-                        attachmentId: a.id,
-                      });
-                      if (alive.current)
-                        setDraft((d) => ({
-                          ...d,
-                          attachments: d.attachments.filter(
-                            (x) => x.id !== a.id,
-                          ),
-                        }));
-                    } catch (e) {
-                      if (alive.current) setError(errorText(e));
-                    } finally {
-                      if (alive.current) setUploading(false);
-                    }
-                  }}
-                >
-                  <Icon name="X" />
-                </button>
-              </span>
-            ))}
-          </div>
+          <ChannelAttachments
+            attachments={draft.attachments}
+            disabled={pending}
+            onRemove={async (a) => {
+              if (sending.current || blocked) return;
+              setUploading(true);
+              try {
+                await rpc.call("discardAttachment", {
+                  id: roomId,
+                  attachmentId: a.id,
+                });
+                if (alive.current)
+                  setDraft((d) => ({
+                    ...d,
+                    attachments: d.attachments.filter((x) => x.id !== a.id),
+                  }));
+              } catch (e) {
+                if (alive.current) setError(errorText(e));
+              } finally {
+                if (alive.current) setUploading(false);
+              }
+            }}
+          />
         )}
         <textarea
           ref={editor}
@@ -425,6 +414,18 @@ export function GroupComposer({
             const files = Array.from(e.clipboardData.files);
             if (files.length) {
               e.preventDefault();
+              const text = e.clipboardData.getData("text/plain");
+              if (text && !blocked && !sending.current) {
+                const { selectionStart, selectionEnd } = e.currentTarget;
+                setDraft((d) => ({
+                  ...d,
+                  text: (
+                    d.text.slice(0, selectionStart) +
+                    text +
+                    d.text.slice(selectionEnd)
+                  ).slice(0, 16000),
+                }));
+              }
               void attach(files);
             }
           }}

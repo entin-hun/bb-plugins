@@ -1742,7 +1742,7 @@ test("agent tools create channels idempotently and attribute sends to the actual
     );
     const send = {
       id: room.id,
-      text: "Review this choice",
+      text: "@all Review this choice",
       requestId: randomUUID(),
       botId: x.a.id,
       speaker: "You",
@@ -1981,6 +1981,354 @@ test("resolved retries no longer count as failed consultation responses", async 
     assert.equal(state.failed, 0);
     assert.equal(state.error, null);
     assert.equal(state.responses[0]?.supersededBy, retry.id);
+  } finally {
+    await x.close();
+  }
+});
+
+test("Directed routes reply targets and mentions; @all overrides every mode", async () => {
+  const x = setup();
+  try {
+    const room = { ...x.room, responseBehavior: "directed" as const };
+    x.store.putRoom(room);
+    const quiet = x.runtime.send(room, "Thanks!", randomUUID());
+    assert.equal(x.store.requestJobs(quiet.id).length, 0);
+    const target = x.runtime.send(room, "@atlas Check this", randomUUID());
+    assert.deepEqual(
+      x.store.requestJobs(target.id).map((j) => j.botId),
+      [x.a.id],
+    );
+    x.store.putMessage({
+      ...target,
+      id: "atlas-reply",
+      botId: x.a.id,
+      speaker: x.a.name,
+      text: "Ready",
+    });
+    const reply = x.runtime.send(
+      room,
+      "One more question",
+      randomUUID(),
+      [],
+      "atlas-reply",
+    );
+    assert.deepEqual(
+      x.store.requestJobs(reply.id).map((j) => j.botId),
+      [x.a.id],
+    );
+    const both = x.runtime.send(
+      room,
+      "@scribe Compare",
+      randomUUID(),
+      [],
+      "atlas-reply",
+    );
+    assert.equal(x.store.requestJobs(both.id).length, 2);
+    const everyone = x.runtime.send(room, "@all Review", randomUUID());
+    assert.equal(x.store.requestJobs(everyone.id).length, 2);
+  } finally {
+    await x.close();
+  }
+});
+
+test("Smart persists sends immediately, chooses a subset once, and permits silence", async () => {
+  const x = setup();
+  try {
+    const room = { ...x.room, responseBehavior: "smart" as const };
+    x.store.putRoom(room);
+    let finish!: (ids: string[]) => void;
+    let calls = 0;
+    x.runtime.route = async () => {
+      calls++;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    };
+    const id = randomUUID();
+    const m = x.runtime.send(room, "Verify this claim", id);
+    assert.equal(x.store.requestJobs(id).length, 0);
+    assert.equal(requestStatus(x.store, room.id, id).complete, false);
+    assert.equal(x.runtime.send(room, "Verify this claim", id).id, m.id);
+    await x.runtime.driveRoom(room);
+    await x.runtime.driveRoom(room);
+    assert.equal(calls, 1);
+    finish([x.a.id]);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(
+      x.store.requestJobs(id).map((j) => j.botId),
+      [x.a.id],
+    );
+    x.runtime.route = async () => [];
+    const silent = x.runtime.send(room, "Thanks", randomUUID());
+    await x.runtime.driveRoom(room);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(requestStatus(x.store, room.id, silent.id).complete, true);
+    assert.equal(x.store.requestJobs(silent.id).length, 0);
+    assert.equal(
+      x.store.messages(room.id).some((m) => m.text === "[PASS]"),
+      false,
+    );
+  } finally {
+    await x.close();
+  }
+});
+
+test("failed Smart routing preserves the message, never fans out, and can retry", async () => {
+  const x = setup();
+  try {
+    const room = { ...x.room, responseBehavior: "smart" as const };
+    x.store.putRoom(room);
+    x.runtime.route = async () => {
+      throw new Error("Router unavailable");
+    };
+    const m = x.runtime.send(room, "Review this", randomUUID());
+    await x.runtime.driveRoom(room);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(x.store.requestJobs(m.id).length, 0);
+    assert.match(
+      requestStatus(x.store, room.id, m.id).error!,
+      /Router unavailable/,
+    );
+    x.runtime.route = async () => [x.b.id];
+    x.runtime.retryRouting(room.id, m.id);
+    await x.runtime.driveRoom(room);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(x.store.requestJobs(m.id)[0]?.botId, x.b.id);
+    assert.equal(x.store.messages(room.id).length, 1);
+  } finally {
+    await x.close();
+  }
+});
+
+test("archiving during routing aborts it and cannot wake a removed bot", async () => {
+  const x = setup();
+  try {
+    const room = { ...x.room, responseBehavior: "smart" as const };
+    x.store.putRoom(room);
+    let finish!: (ids: string[]) => void, signal!: AbortSignal;
+    x.runtime.route = async (_m, _r, _b, s) => {
+      signal = s;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    };
+    const m = x.runtime.send(room, "Review this", randomUUID());
+    await x.runtime.driveRoom(room);
+    await x.runtime.stopRoom(room);
+    assert.equal(signal.aborted, true);
+    finish([x.a.id]);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(x.store.requestJobs(m.id).length, 0);
+  } finally {
+    await x.close();
+  }
+});
+
+test("bot images join the current response once, including image-only replies", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    const bytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aOuoAAAAASUVORK5CYII=",
+      "base64",
+    );
+    x.harness.inspection.sdk.stub("files.read", async () => ({
+      content: bytes.toString("base64"),
+      contentEncoding: "base64",
+      sizeBytes: bytes.length,
+      mimeType: "image/png",
+      path: "/tmp/a/pixel.png",
+    }));
+    x.harness.inspection.sdk.stub("projects.attachments.read", async () => ({
+      bytes,
+      mimeType: "image/png",
+    }));
+    const m = x.runtime.send(x.room, "@atlas Share an image", randomUUID());
+    await x.runtime.drive(x.a);
+    const job = x.store.requestJobs(m.id)[0]!;
+    const call = () =>
+      x.harness.behavior.callAgentTool(
+        "bots_publish_image",
+        { path: "/tmp/a/pixel.png", alt: "QA pixel" },
+        { threadId: job.threadId! },
+      );
+    await call();
+    await call();
+    assert.equal(x.store.job(job.id)!.outputAttachments.length, 1);
+    assert.equal(
+      x.store.messages(x.room.id).length,
+      1,
+      "publishing does not create a duplicate message",
+    );
+    x.runtime.complete(job.threadId!, "[PASS]");
+    await x.runtime.driveRoom(x.room);
+    const reply = x.store.message(job.id)!;
+    assert.equal(reply.text, "");
+    assert.equal(reply.attachments[0]!.type, "localImage");
+    assert.equal(reply.attachments[0]!.alt, "QA pixel");
+    const http = await x.harness.behavior.fetchHttp(
+      "GET",
+      `/attachment?id=${reply.attachments[0]!.id}&inline=1`,
+    );
+    assert.equal(http.headers.get("Content-Type"), "image/png");
+    assert.match(http.headers.get("Content-Disposition")!, /^inline;/);
+    await assert.rejects(call(), /active channel response/);
+  } finally {
+    await x.close();
+  }
+});
+
+test("image classification inspects bytes and keeps SVG downloads non-executable", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    x.harness.inspection.sdk.stub("system.config", async () => ({
+      primaryHostId: "host_test",
+    }));
+    const a = (await x.harness.behavior.callRpc("upload", {
+      id: x.room.id,
+      name: "pretend.png",
+      mimeType: "image/png",
+      data: Buffer.from('<svg onload="alert(1)"></svg>').toString("base64"),
+    })) as { id: string; type: string };
+    assert.equal(a.type, "localFile");
+    const http = await x.harness.behavior.fetchHttp(
+      "GET",
+      `/attachment?id=${a.id}&inline=1`,
+    );
+    assert.match(http.headers.get("Content-Disposition")!, /^attachment;/);
+    assert.equal(http.headers.get("Content-Type"), "application/octet-stream");
+  } finally {
+    await x.close();
+  }
+});
+
+test("deleting during routing cancels classification and keeps the channel deleted", async () => {
+  const x = setup();
+  try {
+    const room = { ...x.room, responseBehavior: "smart" as const };
+    x.store.putRoom(room);
+    let finish!: (ids: string[]) => void, signal!: AbortSignal;
+    x.runtime.route = async (_m, _r, _b, s) => {
+      signal = s;
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    };
+    const m = x.runtime.send(room, "Review", randomUUID());
+    await x.runtime.driveRoom(room);
+    await x.runtime.deleteRoom(room.id);
+    assert.equal(signal.aborted, true);
+    finish([x.a.id]);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(x.store.findRoom(room.id), null);
+    assert.equal(x.store.message(m.id), null);
+    assert.equal(x.store.requestJobs(m.id).length, 0);
+  } finally {
+    await x.close();
+  }
+});
+
+test("bot publication rejects host paths outside its workspace before reading", async () => {
+  const x = setup();
+  await plugin(x.bb);
+  try {
+    const m = x.runtime.send(x.room, "@atlas Image", randomUUID());
+    await x.runtime.drive(x.a);
+    const job = x.store.requestJobs(m.id)[0]!;
+    for (const path of [
+      "/tmp/b/private.png",
+      "/tmp/a/../b/private.png",
+      "/tmp/ab/image.png",
+      "relative.png",
+    ])
+      await assert.rejects(
+        x.harness.behavior.callAgentTool(
+          "bots_publish_image",
+          { path },
+          { threadId: job.threadId! },
+        ),
+        /workspace|absolute/,
+      );
+    assert.equal(x.harness.inspection.sdk.callsTo("files.read").length, 0);
+    assert.deepEqual(x.store.job(job.id)!.outputAttachments, []);
+  } finally {
+    await x.close();
+  }
+});
+
+test("router validates model output and uses provider capabilities for both attempts", async () => {
+  const { selectBots, parseRouting } = await import("../smart-router");
+  const x = setup();
+  try {
+    assert.deepEqual(parseRouting('{"botIds":[]}', [x.a]), []);
+    assert.throws(
+      () => parseRouting('{"botIds":["unknown"]}', [x.a]),
+      /unknown bot/,
+    );
+    assert.throws(() => parseRouting("sure, wake Atlas", [x.a]));
+    x.harness.inspection.sdk.stub("providers.list", async () => [
+      {
+        id: "pi",
+        available: true,
+        reasoningLevels: [{ id: "none" }],
+        capabilities: { permissionModes: ["full"] },
+      },
+      {
+        id: "codex",
+        available: true,
+        reasoningLevels: [{ id: "low" }],
+        capabilities: { permissionModes: ["accept-edits", "full"] },
+      },
+    ]);
+    let waits = 0;
+    x.harness.inspection.sdk.stub("threads.wait", async () => {
+      if (++waits === 1) throw new Error("Primary offline");
+      return {};
+    });
+    x.harness.inspection.sdk.stub("threads.output", async () => ({
+      output: JSON.stringify({ botIds: [x.a.id] }),
+    }));
+    x.harness.inspection.sdk.stub("threads.delete", async () => ({ ok: true }));
+    const m = x.runtime.send(x.room, "Question", randomUUID());
+    assert.deepEqual(
+      await selectBots(
+        x.bb,
+        x.store,
+        {
+          routingProvider: "pi",
+          routingModel: "fast",
+          routingFallbackProvider: "codex",
+          routingFallbackModel: "fallback",
+        },
+        x.a.projectId,
+        x.a.hostId,
+        "/tmp/router",
+        m,
+        [],
+        [x.a],
+        x.runtime.abort.signal,
+      ),
+      [x.a.id],
+    );
+    const args = x.harness.inspection.sdk
+      .callsTo("threads.spawn")
+      .map((c) => c[0] as { reasoningLevel: string; permissionMode: string });
+    assert.deepEqual(
+      args.map((a) => [a.reasoningLevel, a.permissionMode]),
+      [
+        ["none", "full"],
+        ["low", "accept-edits"],
+      ],
+    );
+    assert.equal(x.harness.inspection.sdk.callsTo("threads.delete").length, 2);
+    assert.deepEqual(x.harness.inspection.sdk.callsTo("providers.list")[0], [
+      { hostId: x.a.hostId },
+    ]);
+    assert.equal(
+      x.store.db.prepare("SELECT * FROM routing_sessions").all().length,
+      0,
+    );
   } finally {
     await x.close();
   }

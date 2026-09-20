@@ -391,6 +391,54 @@ const threadUrl = `/projects/${projectId}/threads/${threadId}`;
 
 const captures = [
   {
+    id: "bots-images",
+    packageDir: "bb-plugin-bots",
+    fileName: "channel-images.png",
+    setup: async (client) => {
+      const { rooms } = await pluginRpc("bots", "list", null);
+      const room = rooms.find(r => r.name === "Chat polish QA" && !r.archived);
+      if (!room) throw new Error("Seed or restore the Chat polish QA channel before capturing inline images.");
+      const data = await pluginRpc("bots", "room", { id: room.id });
+      if (!data.messages.some(m => m.speaker === "You" && m.attachments.some(a => a.type === "localImage"))) throw new Error("Missing a real owner image message.");
+      if (!data.messages.some(m => m.botId && m.text === "Here is the inline preview." && m.attachments.some(a => a.type === "localImage"))) throw new Error("Missing a bot-published inline image response.");
+      await client.navigate("/");
+      await client.waitForText("Chat polish QA");
+      await client.evaluate(`(() => {
+        const button = Array.from(document.querySelectorAll('.channels-sidebar button')).find(b => b.textContent.trim().startsWith('#Chat polish QA'));
+        if (!button) throw new Error('QA channel missing from sidebar');
+        button.click();
+      })()`);
+      await client.waitForAriaButton("Rename channel: Chat polish QA");
+      await client.waitForText("Here is the inline preview.");
+      await client.evaluate(`(() => {
+        const row = Array.from(document.querySelectorAll('.bot-room-message')).find(m => m.textContent.includes('A preview pasted directly'));
+        if (!row) throw new Error('Owner paste missing');
+        row.scrollIntoView({block:'start'});
+      })()`);
+      await sleep(600);
+      await client.evaluate(`(() => {
+        const images = Array.from(document.querySelectorAll('[role="log"] .channel-image img'));
+        for (const alt of ['channel-preview.png', 'Four color swatches']) {
+          if (!images.some(i => i.alt === alt && i.complete && i.naturalWidth === 720 && i.naturalHeight === 360)) throw new Error('Inline image failed to load: ' + alt);
+        }
+      })()`);
+    },
+  },
+  {
+    id: "bots-behavior",
+    packageDir: "bb-plugin-bots",
+    fileName: "channel-behavior.png",
+    setup: async (client) => {
+      await captures.find(c => c.id === "bots-images").setup(client);
+      await client.clickFirstButtonWithAria("Channel options");
+      for (const text of ["Response behavior", "Choose relevant bots", "Only mentions and replies", "All bots can respond"]) await client.waitForText(text);
+      await client.evaluate(`(() => {
+        const buttons = Array.from(document.querySelectorAll('[aria-label="Channel options"] button'));
+        if (!buttons.some(b => b.textContent.startsWith('Smart') && b.getAttribute('aria-pressed') === 'true')) throw new Error('Smart selection missing');
+      })()`);
+    },
+  },
+  {
     id: "bots-consultation",
     packageDir: "bb-plugin-bots",
     fileName: "channel-consultation.png",

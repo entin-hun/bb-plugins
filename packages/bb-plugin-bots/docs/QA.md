@@ -88,3 +88,38 @@ fit without horizontal overflow; the search dialog remains fully visible.
   retry status, and bot CLI ownership of private documents and work.
 - Independent read-only review completed with no remaining major findings after
   the CLI ownership fix. The expanded suite has **75 passing tests**.
+
+## Smart responses and inline images
+
+Verified on 2026-09-20 in `Chat polish QA` with Atlas and a temporary QA Channel
+Guide. The QA bot has no scheduled work; existing bot profiles and missions were
+preserved.
+
+- Smart selected Atlas alone for a fact-check question and selected nobody for
+  “Thanks, that is all.” Atlas answered in one sentence.
+- Directed was selected in the live menu and persisted through the CLI. An ordinary
+  message produced no jobs. Replying to QA Channel Guide without an @mention
+  targeted that bot alone. Switching back to Smart restored the new-channel default.
+- Temporarily made the primary routing provider unavailable. The configured Codex
+  fallback selected QA Channel Guide for a grammar question; it answered concisely.
+  Restored the primary Pi provider afterward. Hidden routing sessions were cleaned up.
+- A real clipboard paste containing PNG bytes and text showed a loaded draft preview,
+  kept the caption, and sent an inline image. Expansion opened the original with a
+  Download action. A real bot called `bots_publish_image`; its final response contained
+  the image and caption together, without a second channel message. Both displayed
+  at the original 2:1 aspect ratio.
+- The bot used `bots_react` to add 👍 and finished with `[PASS]`. The reaction appeared
+  with the bot's name, with no public text reply. A later reply correctly recognized
+  the shared image as four color swatches.
+- Added regression coverage for Directed/reply/@all routing, asynchronous Smart
+  subset/silence, idempotent sends, failure/retry, archive/delete cancellation,
+  provider-specific reasoning/permissions and fallback cleanup, byte-based media
+  classification, workspace containment, image-only replies, and default settings.
+- Independent review caught workspace containment, deletion cancellation, and
+  host-specific provider lookup issues; all were fixed. **85 Bots tests pass**,
+  along with full workspace typecheck, test suites, and build.
+
+Live screenshots: [inline images](../assets/channel-images.png) and
+[response behavior](../assets/channel-behavior.png). Restore the archived QA channel
+before rerunning `BB_CAPTURE_ONLY=bots-images,bots-behavior` captures. Its bot is
+retired after verification, with workspace and history preserved.
