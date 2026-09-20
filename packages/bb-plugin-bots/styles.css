@@ -1104,6 +1104,19 @@
   opacity: 1;
   pointer-events: auto;
 }
+.mobile-message-menu {
+  min-width: 0;
+}
+.mobile-message-menu-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.mobile-message-menu-actions > button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
 .bot-message-reference {
   text-align: left;
   cursor: pointer;
@@ -1245,6 +1258,14 @@
   .bot-message-actions > button {
     width: 36px;
     height: 36px;
+  }
+}
+@media (pointer: coarse) {
+  .bot-room-message {
+    -webkit-touch-callout: none;
+  }
+  .bot-message-actions {
+    display: none;
   }
 }
 .channel-hash {

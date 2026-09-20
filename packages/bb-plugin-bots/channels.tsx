@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import * as Popover from "@radix-ui/react-popover";
 import {
   useBbNavigate,
   useRealtime,
@@ -80,6 +87,58 @@ type ChannelData = {
 const mergeMessages = (first: RoomMessage[], next: RoomMessage[]) => [
   ...new Map([...first, ...next].map((m) => [m.id, m])).values(),
 ];
+function MessageActionButtons({
+  message,
+  job,
+  copied,
+  onReact,
+  onReply,
+  onCopy,
+  onView,
+}: {
+  message: RoomMessage;
+  job?: Job;
+  copied: string | null;
+  onReact: (emoji: string) => void;
+  onReply: () => void;
+  onCopy: () => void;
+  onView: () => void;
+}) {
+  return (
+    <>
+      <ReactionPicker
+        label={`Add reaction to ${message.speaker}'s message`}
+        onReact={onReact}
+      />
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`Reply to ${message.speaker}`}
+        onClick={onReply}
+      >
+        <Icon name="CornerDownRight" />
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`Copy ${message.speaker}'s message`}
+        onClick={onCopy}
+      >
+        <Icon name={copied === message.id ? "Check" : "Copy"} />
+      </Button>
+      {(job?.threadId || message.sourceThreadId) && (
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`View ${message.speaker}'s work`}
+          onClick={onView}
+        >
+          <Icon name="ExternalLink" />
+        </Button>
+      )}
+    </>
+  );
+}
 function useChannel(id: string | null) {
   const rpc = useRpc<typeof rpcContract>(),
     request = useRef(0);
@@ -914,9 +973,69 @@ function ChannelChat({ id }: { id: string }) {
     [copied, setCopied] = useState<string | null>(null);
   const [jumpTarget, setJumpTarget] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [mobileActionsMessage, setMobileActionsMessage] = useState<
+    string | null
+  >(null);
   const transcript = useRef<HTMLDivElement>(null),
     atBottom = useRef(true),
     marked = useRef(0);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressPoint = useRef<{ x: number; y: number } | null>(null);
+  const longPressTriggered = useRef(false);
+  const mobileActionsOpenedByKeyboard = useRef(false);
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+    longPressPoint.current = null;
+  }, []);
+  const startLongPress = useCallback(
+    (event: ReactPointerEvent<HTMLElement>, messageId: string) => {
+      if (
+        !window.matchMedia("(pointer: coarse)").matches ||
+        (event.pointerType !== "touch" && event.pointerType !== "pen")
+      )
+        return;
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          'button, a, input, textarea, select, summary, [role="button"], [contenteditable="true"]',
+        )
+      ) {
+        cancelLongPress();
+        return;
+      }
+      cancelLongPress();
+      longPressTriggered.current = false;
+      longPressPoint.current = { x: event.clientX, y: event.clientY };
+      longPressTimer.current = setTimeout(() => {
+        longPressTimer.current = null;
+        longPressPoint.current = null;
+        longPressTriggered.current = true;
+        mobileActionsOpenedByKeyboard.current = false;
+        setMobileActionsMessage(messageId);
+      }, 550);
+    },
+    [cancelLongPress],
+  );
+  const moveLongPress = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const point = longPressPoint.current;
+      if (
+        point &&
+        Math.hypot(event.clientX - point.x, event.clientY - point.y) > 10
+      )
+        cancelLongPress();
+    },
+    [cancelLongPress],
+  );
+  const finishLongPress = useCallback(() => {
+    cancelLongPress();
+    if (longPressTriggered.current)
+      window.setTimeout(() => {
+        longPressTriggered.current = false;
+      }, 0);
+  }, [cancelLongPress]);
+  useEffect(() => cancelLongPress, [cancelLongPress]);
   useEffect(() => {
     const onJump = (event: Event) => {
       const detail = (
@@ -1123,131 +1242,212 @@ function ChannelChat({ id }: { id: string }) {
                   </span>
                 </div>
               )}
-              <article
-                id={`channel-message-${m.id}`}
-                className={`bot-room-message ${compact ? "is-continuation" : ""}`}
-                tabIndex={0}
+              <Popover.Root
+                open={mobileActionsMessage === m.id}
+                onOpenChange={(open) => {
+                  if (!open) setMobileActionsMessage(null);
+                }}
               >
-                <span className="bot-message-avatar" aria-hidden>
-                  {compact
-                    ? ""
-                    : (bot?.avatar ?? (
-                        <Icon name={m.sourceThreadId ? "Bot" : "UserRound"} />
-                      ))}
-                </span>
-                <div className="bot-message-body">
-                  {!compact && (
-                    <header>
-                      <strong>{bot?.name ?? m.speaker}</strong>
-                      <time
-                        dateTime={new Date(m.createdAt).toISOString()}
-                        title={new Date(m.createdAt).toLocaleString()}
-                      >
-                        {new Intl.DateTimeFormat(undefined, {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        }).format(m.createdAt)}
-                      </time>
-                    </header>
-                  )}
-                  {parent && (
-                    <button
-                      className="bot-message-reference"
-                      onClick={() => jump(parent.id)}
-                    >
-                      <Icon name="CornerDownRight" />
-                      <span>
-                        {parent.speaker}:{" "}
-                        {parent.text.slice(0, 160) || "Attachment"}
-                      </span>
-                    </button>
-                  )}
-                  {m.text && (
-                    <Markdown
-                      className="bot-message-markdown text-sm leading-5"
-                      content={m.text}
-                    />
-                  )}
-                  {!!m.attachments.length && (
-                    <ChannelAttachments
-                      attachments={m.attachments}
-                      onImageLoad={() => {
-                        const el = transcript.current;
-                        if (el && atBottom.current && !jumpTarget)
-                          el.scrollTop = el.scrollHeight;
-                      }}
-                    />
-                  )}
-                  {!!grouped.length && (
-                    <div className="channel-reactions">
-                      {grouped.map((emoji) => {
-                        const people = reactions.filter(
-                            (r) => r.messageId === m.id && r.emoji === emoji,
-                          ),
-                          mine = people.some((r) => r.actorId === "user");
-                        return (
-                          <button
-                            key={emoji}
-                            aria-label={`${emoji}: ${people.map((r) => r.actorName).join(", ")}`}
-                            title={people.map((r) => r.actorName).join(", ")}
-                            aria-pressed={mine}
-                            onClick={() => void react(m, emoji)}
-                          >
-                            {emoji} <span>{people.length}</span>
-                          </button>
-                        );
-                      })}
-                      <ReactionPicker
-                        label={`Add reaction to ${m.speaker}'s message`}
-                        onReact={(emoji) => void react(m, emoji)}
-                      />
-                    </div>
-                  )}
-                  <div
-                    className="bot-message-actions rounded-md border border-border bg-popover text-popover-foreground shadow-md"
-                    aria-label={`Actions for ${m.speaker}'s message`}
+                <Popover.Anchor asChild>
+                  <article
+                    id={`channel-message-${m.id}`}
+                    className={`bot-room-message ${compact ? "is-continuation" : ""}`}
+                    tabIndex={0}
+                    aria-haspopup="dialog"
+                    onPointerDown={(event) => startLongPress(event, m.id)}
+                    onPointerMove={moveLongPress}
+                    onPointerUp={finishLongPress}
+                    onPointerCancel={finishLongPress}
+                    onPointerLeave={finishLongPress}
+                    onClickCapture={(event) => {
+                      if (!longPressTriggered.current) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      longPressTriggered.current = false;
+                    }}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "ContextMenu" ||
+                        (event.key === "F10" && event.shiftKey)
+                      ) {
+                        event.preventDefault();
+                        mobileActionsOpenedByKeyboard.current = true;
+                        setMobileActionsMessage(m.id);
+                      }
+                    }}
+                    onContextMenu={(event) => {
+                      if (window.matchMedia("(pointer: coarse)").matches) {
+                        event.preventDefault();
+                        mobileActionsOpenedByKeyboard.current = false;
+                        setMobileActionsMessage(m.id);
+                      }
+                    }}
                   >
-                    <ReactionPicker onReact={(emoji) => void react(m, emoji)} />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Reply to ${m.speaker}`}
-                      onClick={() => {
-                        setReply(m);
-                        if (bot)
-                          setInsertion({
-                            text: `@${bot.handle} `,
-                            nonce: Date.now(),
-                          });
+                    <span className="bot-message-avatar" aria-hidden>
+                      {compact
+                        ? ""
+                        : (bot?.avatar ?? (
+                            <Icon
+                              name={m.sourceThreadId ? "Bot" : "UserRound"}
+                            />
+                          ))}
+                    </span>
+                    <div className="bot-message-body">
+                      {!compact && (
+                        <header>
+                          <strong>{bot?.name ?? m.speaker}</strong>
+                          <time
+                            dateTime={new Date(m.createdAt).toISOString()}
+                            title={new Date(m.createdAt).toLocaleString()}
+                          >
+                            {new Intl.DateTimeFormat(undefined, {
+                              hour: "numeric",
+                              minute: "2-digit",
+                            }).format(m.createdAt)}
+                          </time>
+                        </header>
+                      )}
+                      {parent && (
+                        <button
+                          className="bot-message-reference"
+                          onClick={() => jump(parent.id)}
+                        >
+                          <Icon name="CornerDownRight" />
+                          <span>
+                            {parent.speaker}:{" "}
+                            {parent.text.slice(0, 160) || "Attachment"}
+                          </span>
+                        </button>
+                      )}
+                      {m.text && (
+                        <Markdown
+                          className="bot-message-markdown text-sm leading-5"
+                          content={m.text}
+                        />
+                      )}
+                      {!!m.attachments.length && (
+                        <ChannelAttachments
+                          attachments={m.attachments}
+                          onImageLoad={() => {
+                            const el = transcript.current;
+                            if (el && atBottom.current && !jumpTarget)
+                              el.scrollTop = el.scrollHeight;
+                          }}
+                        />
+                      )}
+                      {!!grouped.length && (
+                        <div className="channel-reactions">
+                          {grouped.map((emoji) => {
+                            const people = reactions.filter(
+                                (r) =>
+                                  r.messageId === m.id && r.emoji === emoji,
+                              ),
+                              mine = people.some((r) => r.actorId === "user");
+                            return (
+                              <button
+                                key={emoji}
+                                aria-label={`${emoji}: ${people.map((r) => r.actorName).join(", ")}`}
+                                title={people
+                                  .map((r) => r.actorName)
+                                  .join(", ")}
+                                aria-pressed={mine}
+                                onClick={() => void react(m, emoji)}
+                              >
+                                {emoji} <span>{people.length}</span>
+                              </button>
+                            );
+                          })}
+                          <ReactionPicker
+                            label={`Add reaction to ${m.speaker}'s message`}
+                            onReact={(emoji) => void react(m, emoji)}
+                          />
+                        </div>
+                      )}
+                      <div
+                        className="bot-message-actions rounded-md border border-border bg-popover text-popover-foreground shadow-md"
+                        aria-label={`Actions for ${m.speaker}'s message`}
+                      >
+                        <MessageActionButtons
+                          message={m}
+                          job={job}
+                          copied={copied}
+                          onReact={(emoji) => void react(m, emoji)}
+                          onReply={() => {
+                            setReply(m);
+                            if (bot)
+                              setInsertion({
+                                text: `@${bot.handle} `,
+                                nonce: Date.now(),
+                              });
+                          }}
+                          onCopy={() => void copy(m)}
+                          onView={() =>
+                            navigate.toThread(
+                              (job?.threadId ?? m.sourceThreadId)!,
+                            )
+                          }
+                        />
+                      </div>
+                    </div>
+                  </article>
+                </Popover.Anchor>
+                {mobileActionsMessage === m.id && (
+                  <Popover.Portal>
+                    <Popover.Content
+                      side="top"
+                      align="end"
+                      sideOffset={6}
+                      collisionPadding={8}
+                      className="channel-popover mobile-message-menu"
+                      aria-label={`Actions for ${m.speaker}'s message`}
+                      data-mobile-message-actions
+                      onOpenAutoFocus={(event) => {
+                        if (!mobileActionsOpenedByKeyboard.current)
+                          event.preventDefault();
+                      }}
+                      onCloseAutoFocus={(event) => {
+                        event.preventDefault();
+                        if (mobileActionsOpenedByKeyboard.current)
+                          document
+                            .getElementById(`channel-message-${m.id}`)
+                            ?.focus();
+                        mobileActionsOpenedByKeyboard.current = false;
                       }}
                     >
-                      <Icon name="CornerDownRight" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label={`Copy ${m.speaker}'s message`}
-                      onClick={() => void copy(m)}
-                    >
-                      <Icon name={copied === m.id ? "Check" : "Copy"} />
-                    </Button>
-                    {(job?.threadId || m.sourceThreadId) && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`View ${m.speaker}'s work`}
-                        onClick={() =>
-                          navigate.toThread(
-                            (job?.threadId ?? m.sourceThreadId)!,
-                          )
-                        }
-                      >
-                        <Icon name="ExternalLink" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </article>
+                      <div className="mobile-message-menu-actions">
+                        <MessageActionButtons
+                          message={m}
+                          job={job}
+                          copied={copied}
+                          onReact={(emoji) => {
+                            setMobileActionsMessage(null);
+                            void react(m, emoji);
+                          }}
+                          onReply={() => {
+                            setMobileActionsMessage(null);
+                            setReply(m);
+                            if (bot)
+                              setInsertion({
+                                text: `@${bot.handle} `,
+                                nonce: Date.now(),
+                              });
+                          }}
+                          onCopy={() => {
+                            setMobileActionsMessage(null);
+                            void copy(m);
+                          }}
+                          onView={() => {
+                            setMobileActionsMessage(null);
+                            navigate.toThread(
+                              (job?.threadId ?? m.sourceThreadId)!,
+                            );
+                          }}
+                        />
+                      </div>
+                    </Popover.Content>
+                  </Popover.Portal>
+                )}
+              </Popover.Root>
             </div>
           );
         })}
