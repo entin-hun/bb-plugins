@@ -14,6 +14,7 @@ import { parseSource, fetchSource, probeSource } from "./src/source.js";
 import { materializeSkill, unmaterializeSkill } from "./src/skills-impl.js";
 import { ensureDir, hashDirectory, rimraf, atomicRename, LIMITS } from "./src/safe-fs.js";
 import type { CatalogPrompt, CatalogResource, CatalogResourceTemplate, CatalogTool, McpServerRecord, PluginRecord, PluginSkillRecord } from "./src/types.js";
+import { searchMcpDirectories } from "./src/directory-search.js";
 
 const jsonRecordSchema = z.record(z.string(), z.unknown());
 
@@ -101,6 +102,23 @@ export const rpcContract = defineRpcContract({
   cancelAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ canceled: z.boolean() }).strict() },
   clearAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ cleared: z.boolean() }).strict() },
   pickFolder: { input: z.null(), output: z.object({ path: z.string().nullable() }).strict() },
+  searchMcpDirectories: {
+    input: z.object({ query: z.string().min(1), sources: z.array(z.string()).optional(), pageSize: z.number().int().min(1).max(50).optional() }).strict(),
+    output: z.object({
+      results: z.array(z.object({
+        name: z.string(),
+        description: z.string(),
+        type: z.string(),
+        source: z.string(),
+        url: z.string(),
+        tags: z.array(z.string()).optional(),
+        score: z.number().optional(),
+        configHint: z.string().optional(),
+        capabilities: z.array(z.string()).optional(),
+      })),
+      errors: z.array(z.string()).optional(),
+    }).strict(),
+  },
 });
 
 function errorText(e: unknown): string { return e instanceof Error ? e.message : String(e); }
@@ -1132,6 +1150,7 @@ export default async function plugin(bb: BbPluginApi) {
       await withDeferredOAuthPersistence(() => gateway.clearAuthentication(p.id, serverId));
       return { cleared: true };
     },
+    async searchMcpDirectories({ query, sources, pageSize }) { return searchMcpDirectories(query, sources, pageSize); },
     async pickFolder() {
       try {
         const cfg = (await bb.sdk.system.config()) as unknown as { primaryHostId?: string | null };

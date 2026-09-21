@@ -7,28 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 
-const MCP_DIRECTORIES = [
-  {
-    name: "Ora Directory",
-    url: "https://directory.ora.ai/",
-    description: "Curated MCP servers by category",
-  },
-  {
-    name: "GitHub Agent Finder",
-    url: "https://agentfinder.github.com/",
-    description: "Open-source agents and MCPs on GitHub",
-  },
-  {
-    name: "Cisco AI Catalog",
-    url: "https://ai-catalog.outshift.io/",
-    description: "Enterprise-ready AI and MCP integrations",
-  },
-  {
-    name: "Hugging Face Spaces",
-    url: "https://huggingface.co/spaces",
-    description: "Community MCPs and AI apps on HF",
-  },
-] as const;
 
 type Snapshot = {
   plugins: {
@@ -531,62 +509,190 @@ function PluginRow({
   );
 }
 
-function McpDirectorySection() {
-  const [collapsed, setCollapsed] = useState(true);
+function McpDiscoveryPanel() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Array<{
+    name: string; description: string; type: string; source: string;
+    url: string; tags?: string[]; score?: number; configHint?: string; capabilities?: string[];
+  }>>([]);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [sources, setSources] = useState<Record<string, boolean>>({
+    ora: true, github: true, huggingface: true,
+  });
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const timerRef = useRef<number | null>(null);
+
+  const toggleSource = (key: string) => {
+    setSources((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const search = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setLoading(true);
+    setSearched(true);
+    setCopiedId(null);
+    try {
+      const activeSources = Object.entries(sources)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      const res = await rpc.call("searchMcpDirectories", {
+        query: q,
+        sources: activeSources.length > 0 && activeSources.length < 3 ? activeSources : undefined,
+        pageSize: 12,
+      });
+      setResults((res.results as unknown as typeof results) ?? []);
+      setErrors((res.errors as string[]) ?? []);
+    } catch (e) {
+      const msg = errorText(e);
+      setErrors([msg]);
+      notifyError(msg, "agent-plugins:search:error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyConfig = async (entry: typeof results[number], index: number) => {
+    const id = `mcp-copy:${index}`;
+    try {
+      let configText = "";
+      if (entry.configHint) {
+        if (entry.configHint.startsWith("{")) {
+          configText = JSON.stringify(JSON.parse(entry.configHint), null, 2);
+        } else if (entry.source === "github") {
+          configText = JSON.stringify({
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/" + entry.name.split("/").pop()],
+          }, null, 2);
+        } else {
+          configText = entry.configHint;
+        }
+      } else {
+        configText = "# " + entry.name + "\n# URL: " + entry.url + "\n# Add to plugin's mcp.json as a stdio or URL server";
+      }
+      await navigator.clipboard.writeText(configText);
+      setCopiedId(id);
+      toast.success("Config copied", { description: "Paste into a plugin's mcp.json", duration: 3000 });
+    } catch {
+      notifyError("Could not copy to clipboard", id);
+    }
+  };
+
+  const sourceLabels: Record<string, string> = { ora: "Ora", github: "GitHub", huggingface: "HF Spaces" };
+  const sourceColors: Record<string, string> = {
+    ora: "bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20",
+    github: "bg-neutral-800/10 text-neutral-800 dark:text-neutral-300 border-neutral-500/20",
+    huggingface: "bg-yellow-500/10 text-yellow-600 dark:text-yellow-400 border-yellow-500/20",
+  };
+  const typeLabels: Record<string, string> = { "mcp-server": "MCP", "mcp-repo": "Repo", "mcp-space": "Space" };
+
   return (
-    <div className="border-t border-border/40 pt-3">
-      <button
-        type="button"
-        onClick={() => setCollapsed(!collapsed)}
-        className="flex w-full items-center gap-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
-        aria-expanded={!collapsed}
-      >
-        <svg
-          className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? "" : "rotate-90"}`}
-          viewBox="0 0 16 16"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <path d="M6 4l4 4-4 4" />
-        </svg>
-        Browse MCP Directories
-      </button>
-      {!collapsed && (
-        <div className="mt-2 space-y-1.5">
-          {MCP_DIRECTORIES.map((dir) => (
-            <a
-              key={dir.name}
-              href={dir.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="group flex items-center gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted/60 transition-colors"
-            >
-              <svg
-                className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M8 0C3.6 0 0 3.6 0 8s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm3.5 10.5l-1.5 1.5L8 9l-2 2-1.5-1.5L8 6l3.5 4.5z" />
-              </svg>
-              <div className="min-w-0 flex-1">
-                <span className="font-medium group-hover:text-foreground transition-colors">{dir.name}</span>
-                <p className="truncate text-xs text-muted-foreground">{dir.description}</p>
-              </div>
-              <svg
-                className="h-3 w-3 shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M11 3l4 5-4 5h-2l3.2-4H1V7h11.2L9 3z" />
-              </svg>
-            </a>
-          ))}
-          <p className="px-2.5 pt-1 text-[11px] leading-snug text-muted-foreground">
-            Find a ready-to-use MCP, copy its config, and paste it into a <code className="font-mono text-[10px]">mcp.json</code> in any installed plugin folder.
-          </p>
+    <div className="border-t border-border/40 pt-3 mt-3">
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <Input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !loading) void search(); }}
+            placeholder="Search MCP servers, agents, tools..."
+            className="h-9 flex-1 font-mono text-xs"
+            aria-label="Search MCP directories"
+            disabled={loading}
+          />
+          <Button
+            size="sm"
+            className="h-9 shrink-0"
+            onClick={() => void search()}
+            disabled={loading || !query.trim()}
+          >
+            {loading ? (
+              <span className="inline-flex items-center gap-1.5">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" aria-hidden="true" />
+                Search
+              </span>
+            ) : ("Search")}
+          </Button>
         </div>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(sources).map(([key, enabled]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => toggleSource(key)}
+              className={"inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium border transition-colors " + (enabled
+                ? (sourceColors[key] ?? "bg-primary/10 text-primary border-primary/20")
+                : "border-border bg-transparent text-muted-foreground")}
+            >
+              {sourceLabels[key] ?? key}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {searched && !loading && (
+        <div className="mt-3 space-y-1.5 max-h-80 overflow-y-auto">
+          {results.length === 0 && errors.length === 0 && (
+            <p className="px-2.5 py-3 text-xs text-muted-foreground text-center">No results found. Try a different search.</p>
+          )}
+          {results.map((entry, i) => {
+            const id = "mcp-copy:" + i;
+            return (
+              <div key={entry.source + ":" + entry.url + ":" + i} className="group flex items-start gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted/60 transition-colors">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-1.5">
+                    <span className="truncate text-xs font-medium">{entry.name}</span>
+                    <span className={"rounded px-1 py-0.5 text-[9px] font-medium border " + (sourceColors[entry.source] ?? "")}>
+                      {sourceLabels[entry.source] ?? entry.source}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground">{typeLabels[entry.type] ?? entry.type}</span>
+                    {entry.score !== undefined && (
+                      <span className="text-[10px] text-muted-foreground" title="Score">
+                        {entry.score > 999 ? (entry.score / 1000).toFixed(1) + "k" : entry.score}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 truncate text-[11px] leading-snug text-muted-foreground">{entry.description || entry.url}</p>
+                  {entry.tags && entry.tags.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {entry.tags.slice(0, 4).map((tag) => (
+                        <span key={tag} className="rounded bg-muted px-1 py-0.5 text-[9px] text-muted-foreground">{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0 flex gap-1 pt-0.5">
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => void copyConfig(entry, i)} title="Copy config">
+                    {copiedId === id ? "Copied!" : "Copy"}
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")} title="Open source">
+                    Open
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+          {errors.length > 0 && (
+            <div className="mt-2 space-y-1">
+              {errors.map((err, i) => (<p key={i} className="text-[10px] text-destructive" role="alert">{err}</p>))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {searched && loading && (
+        <div className="mt-3 flex items-center justify-center gap-2 py-4">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden="true" />
+          <span className="text-xs text-muted-foreground">Searching directories...</span>
+        </div>
+      )}
+
+      {!searched && (
+        <p className="pt-2 text-[11px] leading-snug text-muted-foreground">
+          Search Ora Directory, GitHub, and Hugging Face Spaces for MCP servers. <b>Browse → Copy config → Paste into <code className="font-mono text-[10px]">mcp.json</code></b>
+        </p>
       )}
     </div>
   );
@@ -853,7 +959,7 @@ function AgentPluginsView() {
               {localErr ?? err}
             </p>
           )}
-          <McpDirectorySection />
+          <McpDiscoveryPanel />
         </div>
 
         <div className="rounded-lg border border-border bg-card">
