@@ -7,6 +7,29 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 
+const MCP_DIRECTORIES = [
+  {
+    name: "Ora Directory",
+    url: "https://directory.ora.ai/",
+    description: "Curated MCP servers by category",
+  },
+  {
+    name: "GitHub Agent Finder",
+    url: "https://agentfinder.github.com/",
+    description: "Open-source agents and MCPs on GitHub",
+  },
+  {
+    name: "Cisco AI Catalog",
+    url: "https://ai-catalog.outshift.io/",
+    description: "Enterprise-ready AI and MCP integrations",
+  },
+  {
+    name: "Hugging Face Spaces",
+    url: "https://huggingface.co/spaces",
+    description: "Community MCPs and AI apps on HF",
+  },
+] as const;
+
 type Snapshot = {
   plugins: {
     id: string;
@@ -508,6 +531,67 @@ function PluginRow({
   );
 }
 
+function McpDirectorySection() {
+  const [collapsed, setCollapsed] = useState(true);
+  return (
+    <div className="border-t border-border/40 pt-3">
+      <button
+        type="button"
+        onClick={() => setCollapsed(!collapsed)}
+        className="flex w-full items-center gap-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+        aria-expanded={!collapsed}
+      >
+        <svg
+          className={`h-3 w-3 shrink-0 transition-transform ${collapsed ? "" : "rotate-90"}`}
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M6 4l4 4-4 4" />
+        </svg>
+        Browse MCP Directories
+      </button>
+      {!collapsed && (
+        <div className="mt-2 space-y-1.5">
+          {MCP_DIRECTORIES.map((dir) => (
+            <a
+              key={dir.name}
+              href={dir.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="group flex items-center gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted/60 transition-colors"
+            >
+              <svg
+                className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M8 0C3.6 0 0 3.6 0 8s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm3.5 10.5l-1.5 1.5L8 9l-2 2-1.5-1.5L8 6l3.5 4.5z" />
+              </svg>
+              <div className="min-w-0 flex-1">
+                <span className="font-medium group-hover:text-foreground transition-colors">{dir.name}</span>
+                <p className="truncate text-xs text-muted-foreground">{dir.description}</p>
+              </div>
+              <svg
+                className="h-3 w-3 shrink-0 text-muted-foreground/50 group-hover:text-muted-foreground transition-colors"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M11 3l4 5-4 5h-2l3.2-4H1V7h11.2L9 3z" />
+              </svg>
+            </a>
+          ))}
+          <p className="px-2.5 pt-1 text-[11px] leading-snug text-muted-foreground">
+            Find a ready-to-use MCP, copy its config, and paste it into a <code className="font-mono text-[10px]">mcp.json</code> in any installed plugin folder.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AgentPluginsView() {
   const { snap, err, load } = useSnapshot();
   const rpc = useRpc<typeof rpcContract>();
@@ -769,6 +853,7 @@ function AgentPluginsView() {
               {localErr ?? err}
             </p>
           )}
+          <McpDirectorySection />
         </div>
 
         <div className="rounded-lg border border-border bg-card">
