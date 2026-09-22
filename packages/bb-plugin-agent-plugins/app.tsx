@@ -555,66 +555,51 @@ function McpDiscoveryPanel() {
     }
   };
 
-  const installDiscovered = async (entry: typeof results[number], index: number) => {
+  const [installingIdx, setInstallingIdx] = useState<number | null>(null);
+  const [installPlugin, setInstallPlugin] = useState("");
+  const [installApiKey, setInstallApiKey] = useState("");
+  const [installCreateSkill, setInstallCreateSkill] = useState(false);
+  const [installPlugins, setInstallPlugins] = useState<Array<{ id: string; name: string }>>([]);
+
+  // Load plugins list when install form opens
+  const openInstallForm = async (index: number) => {
+    setInstallingIdx(index);
+    setInstallApiKey("");
+    setInstallCreateSkill(false);
+    try {
+      const snap = await rpc.call("snapshot", null) as { plugins: Array<Record<string, unknown>> };
+      const plugins = (snap.plugins ?? []).map((p: Record<string, unknown>) => ({ id: String(p.id ?? ""), name: String(p.name ?? "?") }));
+      setInstallPlugins(plugins);
+      if (plugins.length > 0) setInstallPlugin(plugins[0].id);
+    } catch { setInstallPlugins([]); }
+  };
+
+  const confirmInstall = async (entry: typeof results[number], index: number) => {
     const id = `mcp-install:${index}`;
-    // 1. Discover the config template
-    let configJson = "";
-    let serverType = "stdio";
+    if (!installPlugin) {
+      notifyError("Select a plugin to install into", id);
+      return;
+    }
     try {
       const cfgRes = await rpc.call("discoverMcpConfig", {
         name: entry.name, url: entry.url, type: entry.type, source: entry.source,
       });
-      configJson = cfgRes.configJson as string;
-      serverType = cfgRes.serverType as string;
-    } catch (e) {
-      const msg = errorText(e);
-      setErrors([msg]);
-      notifyError(msg, id);
-      return;
-    }
+      let overrides: Record<string, unknown> | undefined;
+      if (installApiKey.trim()) overrides = { apiKey: installApiKey.trim() };
 
-    // 2. Parse config and check if API key is needed
-    let configObj: Record<string, unknown> = {};
-    try { configObj = JSON.parse(configJson) as Record<string, unknown>; } catch {}
-
-    let overrides: Record<string, unknown> | undefined;
-    const parsedUrl = configObj.url as string | undefined;
-    const hasCommand = typeof configObj.command === "string";
-
-    // 3. Ask for API key if it looks like a remote MCP and no API key is set
-    if (!hasCommand && parsedUrl && !parsedUrl.includes("localhost")) {
-      const key = window.prompt("Enter API key (leave blank if not needed):", "");
-      if (key !== null && key.trim()) {
-        overrides = { apiKey: key.trim() };
-      }
-    }
-
-    // 4. Find available plugins to attach to
-    let targetPlugin = "";
-    try {
-      // We need the snapshot to see installed plugins
-      // For now, ask which plugin: show first available or let user type
-      const pluginName = window.prompt("Install into which plugin? (name or 'new' for standalone):", "");
-      if (!pluginName) return;
-      targetPlugin = pluginName.trim();
-    } catch {
-      return;
-    }
-
-    // 5. Install
-    try {
       setCopiedId(id);
       const installRes = await rpc.call("installDiscoveredMcp", {
-        pluginId: targetPlugin,
+        pluginId: installPlugin,
         name: entry.name,
         url: entry.url,
         type: entry.type,
         configOverrides: overrides,
       });
-      toast.success("MCP server added", {
-        description: `${entry.name} installed as ${installRes.serverId}`,
+      toast.success("MCP installed", {
+        description: `${entry.name} → plugin ${installRes.serverId}`,
         duration: 5000,
       });
+      setInstallingIdx(null);
     } catch (e) {
       const msg = errorText(e);
       setErrors([msg]);
@@ -622,6 +607,13 @@ function McpDiscoveryPanel() {
     } finally {
       setCopiedId(null);
     }
+  };
+
+  const cancelInstall = () => {
+    setInstallingIdx(null);
+    setInstallPlugin("");
+    setInstallApiKey("");
+    setInstallCreateSkill(false);
   };
 
   const sourceLabels: Record<string, string> = { ora: "Ora", github: "GitHub", huggingface: "HF Spaces" };
@@ -683,7 +675,7 @@ function McpDiscoveryPanel() {
           {results.map((entry, i) => {
             const id = "mcp-copy:" + i;
             return (
-              <div key={entry.source + ":" + entry.url + ":" + i} className="group flex items-start gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted/60 transition-colors">
+              <div key={entry.source + ":" + entry.url + ":" + i} className="group relative flex items-start gap-3 rounded-md px-2.5 py-2 text-sm hover:bg-muted/60 transition-colors">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-1.5">
                     <span className="truncate text-xs font-medium">{entry.name}</span>
@@ -707,9 +699,46 @@ function McpDiscoveryPanel() {
                   )}
                 </div>
                 <div className="shrink-0 flex gap-1 pt-0.5">
-                  <Button size="sm" variant="default" className="h-7 px-2 text-[10px]" onClick={() => void installDiscovered(entry, i)} disabled={copiedId === id} title="Add MCP server to a plugin">
-                    {copiedId === id ? "Adding..." : "Install"}
-                  </Button>
+                  {installingIdx === i ? (
+                    <div className="flex flex-col gap-2 rounded-md border border-border bg-background p-2 min-w-[220px] z-10 absolute right-0 top-8 shadow-md">
+                      <select
+                        className="h-7 rounded border border-border bg-background px-1.5 text-[10px] font-mono"
+                        value={installPlugin}
+                        onChange={(e) => setInstallPlugin(e.target.value)}
+                        aria-label="Target plugin"
+                      >
+                        {installPlugins.length === 0 && <option value="">No plugins</option>}
+                        {installPlugins.map((p) => (
+                          <option key={p.id} value={p.id}>{p.name}</option>
+                        ))}
+                      </select>
+                      <input
+                        className="h-7 rounded border border-border bg-background px-1.5 text-[10px] font-mono"
+                        placeholder="API key (if needed)"
+                        value={installApiKey}
+                        onChange={(e) => setInstallApiKey(e.target.value)}
+                        aria-label="API key"
+                      />
+                      <label className="flex items-center gap-1.5 text-[10px] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={installCreateSkill}
+                          onChange={(e) => setInstallCreateSkill(e.target.checked)}
+                        />
+                        Also create agent skill
+                      </label>
+                      <div className="flex gap-1.5 justify-end">
+                        <Button size="sm" variant="ghost" className="h-6 px-1.5 text-[9px]" onClick={() => void cancelInstall()}>Cancel</Button>
+                        <Button size="sm" variant="default" className="h-6 px-1.5 text-[9px]" onClick={() => void confirmInstall(entry, i)} disabled={copiedId === id}>
+                          {copiedId === id ? "..." : "Add"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="default" className="h-7 px-2 text-[10px]" onClick={() => void openInstallForm(i)} title="Add MCP server to a plugin">
+                      Install
+                    </Button>
+                  )}
                   <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")} title="Open source">
                     Open
                   </Button>
