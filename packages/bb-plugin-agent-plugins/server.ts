@@ -102,8 +102,22 @@ export const rpcContract = defineRpcContract({
   cancelAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ canceled: z.boolean() }).strict() },
   clearAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ cleared: z.boolean() }).strict() },
   pickFolder: { input: z.null(), output: z.object({ path: z.string().nullable() }).strict() },
+  installDiscoveredMcp: {
+    input: z.object({
+      pluginId: z.string().min(1),
+      name: z.string().min(1),
+      url: z.string(),
+      type: z.string(),
+      configOverrides: jsonRecordSchema.optional(),
+    }).passthrough(),
+    output: z.object({ serverId: z.string(), status: z.string() }).strict(),
+  },
+  discoverMcpConfig: {
+    input: z.object({ name: z.string().min(1), url: z.string(), type: z.string(), source: z.string().optional() }).passthrough(),
+    output: z.object({ configJson: z.string(), serverType: z.string() }).strict(),
+  },
   searchMcpDirectories: {
-    input: z.object({ query: z.string().min(1), sources: z.array(z.string()).optional(), pageSize: z.number().int().min(1).max(50).optional() }).strict(),
+    input: z.object({ query: z.string().min(1), sources: z.array(z.string()).optional(), pageSize: z.number().int().min(1).max(50).optional() }).passthrough(),
     output: z.object({
       results: z.array(z.object({
         name: z.string(),
@@ -1151,6 +1165,77 @@ export default async function plugin(bb: BbPluginApi) {
       return { cleared: true };
     },
     async searchMcpDirectories({ query, sources, pageSize }) { return searchMcpDirectories(query, sources, pageSize); },
+    async discoverMcpConfig({ name, url, type, source }) {
+      let configJson = "";
+      let serverType = "stdio";
+      if (type === "mcp-server" || type.includes("mcp-server")) {
+        // Remote HTTP MCP server
+        configJson = JSON.stringify({ url });
+        serverType = "remote";
+      } else if (source === "github") {
+        // GitHub repo — guess stdio command
+        const parts = name.split("/");
+        const pkg = parts.length > 1 ? parts[1] : name;
+        configJson = JSON.stringify({ command: "npx", args: ["-y", pkg] });
+        serverType = "stdio";
+      } else {
+        configJson = JSON.stringify({ url, command: "npx", args: ["-y", name.split("/").pop()] });
+        serverType = "stdio";
+      }
+      return { configJson, serverType };
+    },
+    async installDiscoveredMcp({ pluginId, name, url, type, configOverrides }) {
+      // Generate default config
+      let configJson = JSON.stringify({ url });
+      let serverType = "http";
+      if (type === "mcp-repo") {
+        const parts = name.split("/");
+        const pkg = parts.length > 1 ? parts[1] : name;
+        configJson = JSON.stringify({ command: "npx", args: ["-y", pkg], env: {} });
+        serverType = "stdio";
+      } else if (type === "mcp-space") {
+        configJson = JSON.stringify({ url: `https://${name.split("/").pop()}-${name.split("/")[0].replace(/_/g, "-")}.hf.space/mcp` });
+        serverType = "http";
+      }
+      // Apply overrides (e.g. API key from user prompt)
+      if (configOverrides) {
+        try {
+          const base = JSON.parse(configJson);
+          if (configOverrides.apiKey) {
+            if (!base.env) base.env = {};
+            base.env.API_KEY = configOverrides.apiKey;
+          }
+          if (configOverrides.url) base.url = configOverrides.url;
+          if (configOverrides.command) base.command = configOverrides.command;
+          if (configOverrides.args) base.args = configOverrides.args;
+          configJson = JSON.stringify(base);
+        } catch {}
+      }
+      // Find target plugin record
+      const p = store.getPlugin(pluginId) ?? store.getPluginByName(pluginId);
+      if (!p) throw new Error(`Plugin not found: ${pluginId}`);
+      const serverId = name.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerCase().slice(0, 48);
+      // Upsert MCP server record
+      const existing = store.listMcpServers(p.id).find(s => s.serverId === serverId);
+      store.upsertMcpServer({
+        pluginId: p.id,
+        serverId,
+        type: serverType as "stdio" | "http",
+        configJson,
+        status: existing?.status ?? "idle",
+        lastError: null,
+        approved: existing?.approved ?? 1,
+        enabled: 1,
+      });
+      // Start the server if plugin is active
+      try {
+        await gateway.startServer(p.id, serverId);
+      } catch (e) {
+        bb.log.warn(`[agent-plugins] start after installDiscoveredMcp: ${errorText(e)}`);
+      }
+      await publishChanged({ kind: "mcp-install-discovered", id: p.id, serverId });
+      return { serverId, status: "installed" };
+    },
     async pickFolder() {
       try {
         const cfg = (await bb.sdk.system.config()) as unknown as { primaryHostId?: string | null };

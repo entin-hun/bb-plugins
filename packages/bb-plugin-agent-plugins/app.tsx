@@ -539,11 +539,11 @@ function McpDiscoveryPanel() {
       const activeSources = Object.entries(sources)
         .filter(([, v]) => v)
         .map(([k]) => k);
-      const res = await rpc.call("searchMcpDirectories", {
-        query: q,
-        sources: activeSources.length > 0 && activeSources.length < 3 ? activeSources : undefined,
-        pageSize: 12,
-      });
+      const params: Record<string, unknown> = { query: q, pageSize: 12 };
+      if (activeSources.length > 0 && activeSources.length < Object.keys(sources).length) {
+        params.sources = activeSources;
+      }
+      const res = await rpc.call("searchMcpDirectories", params);
       setResults((res.results as unknown as typeof results) ?? []);
       setErrors((res.errors as string[]) ?? []);
     } catch (e) {
@@ -555,29 +555,72 @@ function McpDiscoveryPanel() {
     }
   };
 
-  const copyConfig = async (entry: typeof results[number], index: number) => {
-    const id = `mcp-copy:${index}`;
+  const installDiscovered = async (entry: typeof results[number], index: number) => {
+    const id = `mcp-install:${index}`;
+    // 1. Discover the config template
+    let configJson = "";
+    let serverType = "stdio";
     try {
-      let configText = "";
-      if (entry.configHint) {
-        if (entry.configHint.startsWith("{")) {
-          configText = JSON.stringify(JSON.parse(entry.configHint), null, 2);
-        } else if (entry.source === "github") {
-          configText = JSON.stringify({
-            command: "npx",
-            args: ["-y", "@modelcontextprotocol/" + entry.name.split("/").pop()],
-          }, null, 2);
-        } else {
-          configText = entry.configHint;
-        }
-      } else {
-        configText = "# " + entry.name + "\n# URL: " + entry.url + "\n# Add to plugin's mcp.json as a stdio or URL server";
+      const cfgRes = await rpc.call("discoverMcpConfig", {
+        name: entry.name, url: entry.url, type: entry.type, source: entry.source,
+      });
+      configJson = cfgRes.configJson as string;
+      serverType = cfgRes.serverType as string;
+    } catch (e) {
+      const msg = errorText(e);
+      setErrors([msg]);
+      notifyError(msg, id);
+      return;
+    }
+
+    // 2. Parse config and check if API key is needed
+    let configObj: Record<string, unknown> = {};
+    try { configObj = JSON.parse(configJson) as Record<string, unknown>; } catch {}
+
+    let overrides: Record<string, unknown> | undefined;
+    const parsedUrl = configObj.url as string | undefined;
+    const hasCommand = typeof configObj.command === "string";
+
+    // 3. Ask for API key if it looks like a remote MCP and no API key is set
+    if (!hasCommand && parsedUrl && !parsedUrl.includes("localhost")) {
+      const key = window.prompt("Enter API key (leave blank if not needed):", "");
+      if (key !== null && key.trim()) {
+        overrides = { apiKey: key.trim() };
       }
-      await navigator.clipboard.writeText(configText);
-      setCopiedId(id);
-      toast.success("Config copied", { description: "Paste into a plugin's mcp.json", duration: 3000 });
+    }
+
+    // 4. Find available plugins to attach to
+    let targetPlugin = "";
+    try {
+      // We need the snapshot to see installed plugins
+      // For now, ask which plugin: show first available or let user type
+      const pluginName = window.prompt("Install into which plugin? (name or 'new' for standalone):", "");
+      if (!pluginName) return;
+      targetPlugin = pluginName.trim();
     } catch {
-      notifyError("Could not copy to clipboard", id);
+      return;
+    }
+
+    // 5. Install
+    try {
+      setCopiedId(id);
+      const installRes = await rpc.call("installDiscoveredMcp", {
+        pluginId: targetPlugin,
+        name: entry.name,
+        url: entry.url,
+        type: entry.type,
+        configOverrides: overrides,
+      });
+      toast.success("MCP server added", {
+        description: `${entry.name} installed as ${installRes.serverId}`,
+        duration: 5000,
+      });
+    } catch (e) {
+      const msg = errorText(e);
+      setErrors([msg]);
+      notifyError(msg, id);
+    } finally {
+      setCopiedId(null);
     }
   };
 
@@ -664,8 +707,8 @@ function McpDiscoveryPanel() {
                   )}
                 </div>
                 <div className="shrink-0 flex gap-1 pt-0.5">
-                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => void copyConfig(entry, i)} title="Copy config">
-                    {copiedId === id ? "Copied!" : "Copy"}
+                  <Button size="sm" variant="default" className="h-7 px-2 text-[10px]" onClick={() => void installDiscovered(entry, i)} disabled={copiedId === id} title="Add MCP server to a plugin">
+                    {copiedId === id ? "Adding..." : "Install"}
                   </Button>
                   <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => window.open(entry.url, "_blank", "noopener,noreferrer")} title="Open source">
                     Open
@@ -691,7 +734,7 @@ function McpDiscoveryPanel() {
 
       {!searched && (
         <p className="pt-2 text-[11px] leading-snug text-muted-foreground">
-          Search Ora Directory, GitHub, and Hugging Face Spaces for MCP servers. <b>Browse → Copy config → Paste into <code className="font-mono text-[10px]">mcp.json</code></b>
+          Search Ora Directory, GitHub, and Hugging Face Spaces for MCP servers. Click <b>Install</b> to add one to any installed plugin.
         </p>
       )}
     </div>
