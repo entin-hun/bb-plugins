@@ -129,9 +129,9 @@ export const rpcContract = defineRpcContract({
         score: z.number().optional(),
         configHint: z.string().optional(),
         capabilities: z.array(z.string()).optional(),
-      })),
-      errors: z.array(z.string()).optional(),
-    }).strict(),
+      })).default([]),
+      errors: z.array(z.string()).default([]),
+    }).passthrough(),
   },
 });
 

@@ -144,5 +144,5 @@ export async function searchMcpDirectories(
   if (targetSources.includes("github")) tasks.push(github);
   if (targetSources.includes("huggingface")) tasks.push(huggingface);
   await Promise.all(tasks.map((t) => t().catch((e) => errors.push(errorText(e)))));
-  return { results, errors: errors.length > 0 ? errors : undefined };
+  return { results, errors };
 }
