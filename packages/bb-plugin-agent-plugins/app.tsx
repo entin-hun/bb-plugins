@@ -567,8 +567,8 @@ function McpDiscoveryPanel() {
     setInstallApiKey("");
     setInstallCreateSkill(false);
     try {
-      const snap = await rpc.call("snapshot", null) as { plugins: Array<Record<string, unknown>> };
-      const plugins = (snap.plugins ?? []).map((p: Record<string, unknown>) => ({ id: String(p.id ?? ""), name: String(p.name ?? "?") }));
+      const res = await rpc.call("listBbPlugins", null) as { plugins: Array<{ id: string; name: string }> };
+      const plugins = res.plugins ?? [];
       setInstallPlugins(plugins);
       if (plugins.length > 0) setInstallPlugin(plugins[0].id);
     } catch { setInstallPlugins([]); }

@@ -102,6 +102,7 @@ export const rpcContract = defineRpcContract({
   cancelAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ canceled: z.boolean() }).strict() },
   clearAuthentication: { input: z.object({ id: z.string().min(1), serverId: z.string().min(1) }).strict(), output: z.object({ cleared: z.boolean() }).strict() },
   pickFolder: { input: z.null(), output: z.object({ path: z.string().nullable() }).strict() },
+  listBbPlugins: { input: z.null(), output: z.object({ plugins: z.array(z.object({ id: z.string(), name: z.string(), version: z.string().optional() })) }).strict() },
   installDiscoveredMcp: {
     input: z.object({
       pluginId: z.string().min(1),
@@ -1183,6 +1184,16 @@ export default async function plugin(bb: BbPluginApi) {
         serverType = "stdio";
       }
       return { configJson, serverType };
+    },
+    async listBbPlugins() {
+      try {
+        const result = await bb.sdk.plugins.list() as { plugins: Array<{ id: string; source: string; version?: string }> };
+        const plugins = (result.plugins ?? []).map((p) => ({ id: p.id, name: p.id, version: p.version }));
+        return { plugins };
+      } catch (e) {
+        bb.log.warn(`[agent-plugins] listBbPlugins failed: ${errorText(e)}`);
+        return { plugins: [] };
+      }
     },
     async installDiscoveredMcp({ pluginId, name, url, type, configOverrides }) {
       // Generate default config
